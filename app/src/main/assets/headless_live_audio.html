@@ -3,13 +3,15 @@
 <head>
     <meta charset="utf-8">
     <title>Headless Live Audio Engine</title>
+    <!-- Puter.js SDK for authentic native OAuth login via MyWebChromeClient.onCreateWindow -->
+    <script src="https://js.puter.com/v2/"></script>
 </head>
 <body>
 <script>
 /**
  * Headless Live Audio & WebSocket Bridge for Puter Unofficial
  * Handles Gemini Live BidiGenerateContent WebSocket, 24kHz audio streaming,
- * 16kHz microphone capture, barge-in interruption detection, and vision tool calling.
+ * 16kHz microphone capture, barge-in interruption detection, and Puter SDK Auth.
  */
 let liveWs = null;
 let micAudioContext = null;
@@ -31,21 +33,29 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
     const bridge = getBridge();
     const apiKey = bridge ? bridge.getGeminiApiKey() : "";
 
-    // Resolve model ID safely without duplicate 'models/' prefix
-    let rawModel = "gemini-2.0-flash-exp";
-    if (personaPrompt && (personaPrompt.includes("gemini") || personaPrompt.includes("flash"))) {
+    // Resolve model ID strictly to the two supported Live models
+    let rawModel = "gemini-3.1-flash-live-preview";
+    if (personaPrompt && typeof personaPrompt === "string" && personaPrompt.trim().length > 0 && personaPrompt !== "auto") {
         rawModel = personaPrompt;
     } else if (bridge && bridge.getModelId && bridge.getModelId()) {
         rawModel = bridge.getModelId();
     }
-    const cleanModel = rawModel.replace(/^models\//, "");
+
+    let cleanModel = rawModel.replace(/^models\//, "").trim();
+
+    // Map strictly to the two official Live model identifiers
+    if (cleanModel.toLowerCase().includes("native-audio") || 
+        cleanModel.toLowerCase().includes("native audio") || 
+        cleanModel.toLowerCase().includes("2.5-flash-native")) {
+        cleanModel = "gemini-2.5-flash-native-audio-preview-12-2025";
+    } else {
+        cleanModel = "gemini-3.1-flash-live-preview";
+    }
 
     // Resolve system persona
     currentPersona = "You are an intelligent real-time conversational AI voice assistant.";
     if (bridge && bridge.getCustomInstruction && bridge.getCustomInstruction().trim().length > 0) {
         currentPersona = bridge.getCustomInstruction();
-    } else if (personaPrompt && !personaPrompt.includes("gemini") && personaPrompt.trim().length > 0) {
-        currentPersona = personaPrompt;
     }
 
     // Resolve voice name
@@ -109,9 +119,7 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
                             }
                         ]
                     }
-                ],
-                inputAudioTranscription: {},
-                outputAudioTranscription: {}
+                ]
             }
         };
         liveWs.send(JSON.stringify(setupMessage));
@@ -246,7 +254,10 @@ window.stopCommentarySession = function() {
     isSessionActive = false;
     cleanupAudio();
     if (liveWs) {
-        try { liveWs.close(); } catch(e) {}
+        try { 
+            liveWs.onclose = null; // Suppress duplicate disconnect invocation
+            liveWs.close(); 
+        } catch(e) {}
         liveWs = null;
     }
     const bridge = getBridge();
