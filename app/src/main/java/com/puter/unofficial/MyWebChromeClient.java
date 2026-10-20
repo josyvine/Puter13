@@ -140,10 +140,13 @@ public class MyWebChromeClient extends WebChromeClient {
             private boolean handlePopupUrl(WebView view, String url) {
                 triggerNativeLog("Popup Navigating: " + url, "info");
 
-                // If redirected to Puter marketing homepage, force route to login form
+                // If redirected to Puter marketing homepage, force route to embedded SDK login prompt
                 if (isPuterMarketingLanding(url)) {
-                    triggerNativeLog("Marketing page intercepted. Redirecting to login...", "warn");
-                    view.loadUrl("https://puter.com/login");
+                    triggerNativeLog("Marketing page intercepted. Redirecting to Puter SDK Auth...", "warn");
+                    java.util.Map<String, String> headers = new java.util.HashMap<>();
+                    headers.put("Origin", "https://appassets.androidplatform.net");
+                    headers.put("Referer", "https://appassets.androidplatform.net/");
+                    view.loadUrl("https://puter.com/?embedded_in_popup=true&request_auth=true", headers);
                     return true;
                 }
 
@@ -158,8 +161,11 @@ public class MyWebChromeClient extends WebChromeClient {
                 triggerNativeLog("Popup Page Loaded: " + url, "info");
 
                 if (isPuterMarketingLanding(url)) {
-                    triggerNativeLog("Marketing page loaded. Redirecting to login...", "warn");
-                    view.loadUrl("https://puter.com/login");
+                    triggerNativeLog("Marketing page loaded. Redirecting to Puter SDK Auth...", "warn");
+                    java.util.Map<String, String> headers = new java.util.HashMap<>();
+                    headers.put("Origin", "https://appassets.androidplatform.net");
+                    headers.put("Referer", "https://appassets.androidplatform.net/");
+                    view.loadUrl("https://puter.com/?embedded_in_popup=true&request_auth=true", headers);
                     return;
                 }
 
@@ -170,7 +176,10 @@ public class MyWebChromeClient extends WebChromeClient {
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 super.doUpdateVisitedHistory(view, url, isReload);
                 if (isPuterMarketingLanding(url)) {
-                    view.loadUrl("https://puter.com/login");
+                    java.util.Map<String, String> headers = new java.util.HashMap<>();
+                    headers.put("Origin", "https://appassets.androidplatform.net");
+                    headers.put("Referer", "https://appassets.androidplatform.net/");
+                    view.loadUrl("https://puter.com/?embedded_in_popup=true&request_auth=true", headers);
                     return;
                 }
                 checkAuthCompletion(view, url);
@@ -202,13 +211,18 @@ public class MyWebChromeClient extends WebChromeClient {
 
     private boolean isPuterMarketingLanding(String url) {
         if (url == null) return false;
+        // Do not intercept if it contains the SDK OAuth parameters or dedicated login path
+        if (url.contains("embedded_in_popup=true") || url.contains("request_auth=true") || url.contains("login")) {
+            return false;
+        }
         String clean = url.trim().toLowerCase(Locale.US);
+        if (clean.endsWith("/")) {
+            clean = clean.substring(0, clean.length() - 1);
+        }
         return clean.equals("https://puter.com") || 
-               clean.equals("https://puter.com/") || 
                clean.equals("http://puter.com") || 
-               clean.equals("http://puter.com/") ||
-               clean.equals("https://www.puter.com") ||
-               clean.equals("https://www.puter.com/");
+               clean.equals("https://www.puter.com") || 
+               clean.equals("http://www.puter.com");
     }
 
     private void checkAuthCompletion(WebView view, String url) {
