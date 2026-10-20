@@ -5,6 +5,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -24,6 +25,7 @@ public class HeadlessAudioBridge {
         void onTranscriptReceived(String text);
         void onAudioChunkReceived(String base64Pcm);
         void onCommentaryFinished();
+        default void onSessionDisconnected() {}
         void onTargetCoordinatesReceived(String targetId, float left, float top, float right, float bottom);
         void onError(String errorMessage);
     }
@@ -32,6 +34,7 @@ public class HeadlessAudioBridge {
     private final WebView webView;
     private final Handler mainHandler;
     private LiveAudioEventListener listener;
+    private boolean isSessionActive = false;
 
     @SuppressLint("SetJavaScriptEnabled")
     public HeadlessAudioBridge(Context context, WebView webView) {
@@ -46,6 +49,10 @@ public class HeadlessAudioBridge {
         this.listener = listener;
     }
 
+    public boolean isSessionActive() {
+        return isSessionActive;
+    }
+
     @SuppressLint("SetJavaScriptEnabled")
     private void setupWebView() {
         WebSettings settings = webView.getSettings();
@@ -55,12 +62,24 @@ public class HeadlessAudioBridge {
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
 
-        webView.setWebChromeClient(new MyWebChromeClient(null));
+        // Grant WebRTC microphone capture permission automatically to avoid silent getUserMedia drop
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(final PermissionRequest request) {
+                mainHandler.post(() -> {
+                    if (request != null) {
+                        request.grant(request.getResources());
+                    }
+                });
+            }
+        });
+
         webView.loadUrl(HEADLESS_ASSET_URL);
     }
 
     public void startCommentarySession(String scriptText, String personaPrompt) {
         mainHandler.post(() -> {
+            isSessionActive = true;
             String scriptEscaped = scriptText != null ? JSONObject.quote(scriptText) : "\"\"";
             String personaEscaped = personaPrompt != null ? JSONObject.quote(personaPrompt) : "\"\"";
             String js = String.format("window.startCommentarySession(%s, %s);", scriptEscaped, personaEscaped);
@@ -70,7 +89,9 @@ public class HeadlessAudioBridge {
 
     public void stopCommentarySession() {
         mainHandler.post(() -> {
+            isSessionActive = false;
             webView.evaluateJavascript("window.stopCommentarySession();", null);
+            dispatchDisconnected();
         });
     }
 
@@ -87,6 +108,7 @@ public class HeadlessAudioBridge {
     // Callbacks from WebAppInterface dispatched to listener
     public void dispatchConnected() {
         mainHandler.post(() -> {
+            isSessionActive = true;
             if (listener != null) listener.onSessionConnected();
         });
     }
@@ -105,7 +127,15 @@ public class HeadlessAudioBridge {
 
     public void dispatchFinished() {
         mainHandler.post(() -> {
+            isSessionActive = false;
             if (listener != null) listener.onCommentaryFinished();
+        });
+    }
+
+    public void dispatchDisconnected() {
+        mainHandler.post(() -> {
+            isSessionActive = false;
+            if (listener != null) listener.onSessionDisconnected();
         });
     }
 
@@ -117,6 +147,7 @@ public class HeadlessAudioBridge {
 
     public void dispatchError(String error) {
         mainHandler.post(() -> {
+            isSessionActive = false;
             if (listener != null) listener.onError(error);
         });
     }
