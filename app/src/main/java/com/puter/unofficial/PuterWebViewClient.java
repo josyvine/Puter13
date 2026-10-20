@@ -257,17 +257,19 @@ public class PuterWebViewClient extends WebViewClient {
         if (url == null) return false;
         Log.d(TAG, "Loading URL: " + url);
 
-        // Puter OAuth callback detection and token extraction
+        // Puter OAuth callback detection and token extraction (including /app dashboard redirect)
         if (authManager.isAuthCallback(url) && !url.equals(lastHandledAuthUrl)) {
             Log.i(TAG, "Authentication successful redirect detected: " + url);
             lastHandledAuthUrl = url;
 
-            extractAndSaveTokenIfPresent(url);
-            authManager.setLoggedIn(true);
+            authManager.handleAuthCallback(url);
             CookieManager.getInstance().flush();
 
             if (context instanceof MainActivity) {
-                ((MainActivity) context).runOnUiThread(() -> ((MainActivity) context).handleUrlChange(url));
+                ((MainActivity) context).runOnUiThread(() -> {
+                    ((MainActivity) context).handleUrlChange(url);
+                    ((MainActivity) context).reloadWebView();
+                });
             }
             return false;
         }
@@ -303,15 +305,16 @@ public class PuterWebViewClient extends WebViewClient {
 
         CookieManager.getInstance().flush();
 
-        // Check if page finished on an auth confirmation URL
+        // Check if page finished on an auth confirmation URL or desktop dashboard (/app)
         if (url != null && authManager.isAuthCallback(url)) {
-            extractAndSaveTokenIfPresent(url);
-            authManager.setLoggedIn(true);
+            authManager.handleAuthCallback(url);
             CookieManager.getInstance().flush();
-        }
-
-        if (context instanceof MainActivity) {
-            ((MainActivity) context).handleUrlChange(url);
+            if (context instanceof MainActivity) {
+                ((MainActivity) context).runOnUiThread(() -> {
+                    ((MainActivity) context).handleUrlChange(url);
+                    ((MainActivity) context).reloadWebView();
+                });
+            }
         }
 
         if (url != null && url.startsWith(AppConstants.LOCAL_INDEX_URL)) {
