@@ -33,7 +33,9 @@ public class AppConstants {
     public static final String KEY_GEMINI_API_KEY = "gemini_user_api_key";
     public static final String KEY_GEMINI_STREAMING = "gemini_streaming_enabled";
     public static final String KEY_GEMINI_GROUNDING = "gemini_grounding_type";
+    public static final String KEY_GEMINI_GROUNDING_MODE = "gemini_grounding_mode";
     public static final String KEY_GEMINI_VOICE_NAME = "gemini_voice_name";
+    public static final String KEY_GEMINI_VOICE_CHARACTER = "gemini_voice_character";
     public static final String KEY_GEMINI_CACHED_LIVE_MODELS = "gemini_cached_live_models";
 
     // --- USAGE TRACKING ---
@@ -45,7 +47,9 @@ public class AppConstants {
     public static final String LOCAL_INDEX_URL = "https://appassets.androidplatform.net/assets/index.html";
     public static final String LOCAL_BROWSER_URL = "file:///android_asset/browser.html";
     public static final String LOCAL_BOT_URL = "file:///android_asset/bot.html";
-    public static final String PUTER_LOGIN_URL = "https://puter.com/login";
+    
+    // Dedicated Puter OAuth Authorization URL with embedded directive
+    public static final String PUTER_LOGIN_URL = "https://puter.com/login?embedded=true";
     public static final String GEMINI_MODELS_LIST_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
     // Markers for detecting successful SDK authentication redirects
