@@ -12,7 +12,6 @@ import android.util.Log;
 import android.view.ViewGroup;
 import android.webkit.ConsoleMessage;
 import android.webkit.CookieManager;
-import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
@@ -35,9 +34,8 @@ import java.util.Locale;
  * Handles the native file upload functionality (Camera, Gallery, File Picker)
  * for the WebView, enabling Base64 upload support for Puter AI interactions.
  * UPDATED: Added Console Message interception and moved to HTTPS Origin for persistence.
- * CORE FIX: Prevented OAuth interruption by allowing final redirects to load.
- * TIMING FIX: Synchronized WebRTC permission requests to eliminate Android 9 WebView thread race conditions.
- * WEBRTC FIX: Implemented explicit resource matching to bypass ColorOS hardware permission filters.
+ * CORE FIX: Intercepts Puter Web OS desktop redirect (/app) to auto-dismiss login popup.
+ * TIMING FIX: Synchronized WebRTC permission requests to eliminate thread race conditions.
  */
 public class MyWebChromeClient extends WebChromeClient {
 
@@ -47,15 +45,14 @@ public class MyWebChromeClient extends WebChromeClient {
     private String currentPhotoPath;
     private Dialog authDialog; // Dialog to host the login popup WebView
     private boolean isAuthProcessing = false; // Prevents the "Blinking" reload loop
+    private String lastAuthUrl = null;
 
     public MyWebChromeClient(Activity activity) {
         this.activity = activity;
     }
 
     /**
-     * FIX: Capture JavaScript console logs and pipe them to Logcat.
-     * This allows you to see JS errors in the system logs even without Chrome DevTools.
-     * UPDATED: Now also writes unhandled errors and warnings directly to the public diagnostic log.
+     * Capture JavaScript console logs and pipe them to Logcat.
      */
     @Override
     public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
@@ -86,10 +83,10 @@ public class MyWebChromeClient extends WebChromeClient {
 
     @Override
     public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
+        if (activity == null) return false;
         WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
         isAuthProcessing = false; // Reset lock for new window
 
-        // Log event to the diagnostic console
         triggerNativeLog("Auth Popup Requested by SDK", "native");
 
         // 1. Create a Layout to hold a Close Button + The Popup WebView
@@ -123,40 +120,30 @@ public class MyWebChromeClient extends WebChromeClient {
         webSettings.setJavaScriptCanOpenWindowsAutomatically(true);
         webSettings.setSupportMultipleWindows(true);
 
-        // FIX: Match the UserAgent of the main window exactly to ensure session continuity.
         String userAgent = popupWebView.getSettings().getUserAgentString().replace("; wv", "");
         webSettings.setUserAgentString(userAgent);
 
-        // Enable Third-Party Cookies so the Puter session saves correctly
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(popupWebView, true);
 
-        // 4. Monitor the popup for URL changes.
+        // 4. Monitor the popup for URL changes and post-login desktop routing
         popupWebView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
                 triggerNativeLog("Popup Navigating: " + url, "info");
+                lastAuthUrl = url;
 
-                // Active URL monitoring for success markers
-                if (url.contains(AppConstants.AUTH_TOKEN_PARAM) || 
-                    url.contains(AppConstants.AUTH_SUCCESS_MARKER) || 
-                    url.contains("auth_success") || 
-                    url.contains("signed_in=true")) {
-
+                AuthManager auth = AuthManager.getInstance(activity);
+                if (auth.isAuthCallback(url)) {
                     if (!isAuthProcessing) {
                         isAuthProcessing = true;
-
-                        triggerNativeLog("Auth marker found. Waiting for session persistence...", "native");
-
-                        // CORE FIX: Delay closure and return FALSE to allow the redirect to finalize.
-                        // This allows Puter to finish writing cookies/localStorage.
+                        triggerNativeLog("Auth completion marker found (/app or token). Finalizing session...", "native");
                         view.postDelayed(() -> {
                             CookieManager.getInstance().flush();
                             closeAuthAndRefresh();
-                        }, 2000);
+                        }, 800);
                     }
-                    // Return false to allow the URL to load and finalize the SDK session
                     return false;
                 }
                 return false;
@@ -166,11 +153,24 @@ public class MyWebChromeClient extends WebChromeClient {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 CookieManager.getInstance().flush();
+                lastAuthUrl = url;
                 triggerNativeLog("Popup Page Loaded: " + url, "info");
+
+                AuthManager auth = AuthManager.getInstance(activity);
+                if (url != null && auth.isAuthCallback(url)) {
+                    if (!isAuthProcessing) {
+                        isAuthProcessing = true;
+                        triggerNativeLog("Auth callback recognized in onPageFinished. Closing dialog...", "native");
+                        view.postDelayed(() -> {
+                            CookieManager.getInstance().flush();
+                            closeAuthAndRefresh();
+                        }, 500);
+                    }
+                }
             }
         });
 
-        // 5. Handle the official window.close() call from Puter SDK
+        // 5. Handle official window.close() call from Puter SDK
         popupWebView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onCloseWindow(WebView window) {
@@ -193,35 +193,34 @@ public class MyWebChromeClient extends WebChromeClient {
         return true;
     }
 
-    /**
-     * Helper to send logs to the background main console and the public documents log.
-     */
     private void triggerNativeLog(String msg, String type) {
         Log.d("PuterPopupTrace", msg);
         ActionReportLogger.logAction("AUTH_POPUP", "[" + type + "] " + msg);
     }
 
     /**
-     * Helper method to finalize authentication, dismiss popup, and refresh main UI.
-     * CORE FIX: Removed the fake native auth.setLoggedIn(true) call.
-     * TRUSTED SOURCE: We now rely on the JS SDK to report the status.
+     * Finalizes authentication, marks session in AuthManager, dismisses popup, and refreshes UI.
      */
     private void closeAuthAndRefresh() {
         CookieManager.getInstance().flush(); 
+
+        if (activity != null) {
+            AuthManager auth = AuthManager.getInstance(activity);
+            if (lastAuthUrl != null) {
+                auth.handleAuthCallback(lastAuthUrl);
+            }
+            auth.setLoggedIn(true);
+        }
 
         if (authDialog != null && authDialog.isShowing()) {
             authDialog.dismiss();
             authDialog = null;
         }
 
-        // Notify the main WebView to check the Puter SDK state
         if (activity instanceof MainActivity) {
-            final WebView mainView = activity.findViewById(R.id.headlessAudioWebView);
-            if (mainView != null) {
-                mainView.postDelayed(() -> {
-                    mainView.evaluateJavascript("if(window.updateAuthUI){ window.updateAuthUI(); }", null);
-                }, 1500);
-            }
+            activity.runOnUiThread(() -> {
+                ((MainActivity) activity).reloadWebView();
+            });
         }
     }
 
@@ -236,33 +235,34 @@ public class MyWebChromeClient extends WebChromeClient {
 
     // --- HARDWARE PERMISSIONS GATE OVERRIDE ---
 
-    /**
-     * Intercepts standard HTML5 permission queries (such as Camera & Microphone).
-     * Grants matching permissions cleanly to prevent WebRTC/getUserMedia silent halts.
-     * TIMING FIX: Executes synchronously to prevent WebView thread timeout rejections.
-     * WebRTC EXPLICIT MAPPING: Safely filters and authorizes requested hardware capabilities.
-     */
     @Override
     public void onPermissionRequest(final PermissionRequest request) {
         Log.d(TAG, "onPermissionRequest: Processing hardware capture access permission synchronously.");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            activity.runOnUiThread(() -> {
+            if (activity != null) {
+                activity.runOnUiThread(() -> {
+                    try {
+                        String[] requestedResources = request.getResources();
+                        request.grant(requestedResources);
+                        Log.d(TAG, "onPermissionRequest: Successfully granted resources: " + java.util.Arrays.toString(requestedResources));
+                    } catch (Exception e) {
+                        Log.e(TAG, "onPermissionRequest: Failed to grant permission. Error: " + e.getMessage());
+                        request.deny();
+                    }
+                });
+            } else {
                 try {
-                    String[] requestedResources = request.getResources();
-                    request.grant(requestedResources);
-                    Log.d(TAG, "onPermissionRequest: Successfully granted resources: " + java.util.Arrays.toString(requestedResources));
-                } catch (Exception e) {
-                    Log.e(TAG, "onPermissionRequest: Failed to grant permission synchronously. Error: " + e.getMessage());
-                    request.deny();
-                }
-            });
+                    request.grant(request.getResources());
+                } catch (Exception ignored) {}
+            }
         }
     }
 
-    // --- FILE UPLOAD LOGIC (UNCHANGED) ---
+    // --- FILE UPLOAD LOGIC ---
 
     @Override
     public boolean onShowFileChooser(WebView webView, ValueCallback<Uri[]> filePathCallback, FileChooserParams fileChooserParams) {
+        if (activity == null) return false;
         if (uploadMessage != null) {
             uploadMessage.onReceiveValue(null);
         }
