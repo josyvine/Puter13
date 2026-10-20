@@ -35,6 +35,7 @@ import android.view.ViewGroup;
 import android.view.animation.Animation;
 import android.view.animation.AnimationUtils;
 import android.webkit.CookieManager;
+import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -89,6 +90,7 @@ import java.util.Map;
 /**
  * 100% Pure Native Android Java Activity for Puter Unofficial.
  * Uses Puter SDK OAuth parameters (?embedded_in_popup=true&request_auth=true) to authenticate.
+ * Catches Puter SDK window.close() via WebChromeClient to auto-dismiss login dialog.
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -2344,5 +2346,3 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 }
-
-
