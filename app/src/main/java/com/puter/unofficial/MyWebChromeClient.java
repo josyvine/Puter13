@@ -33,9 +33,7 @@ import java.util.Locale;
 /**
  * Handles the native file upload functionality (Camera, Gallery, File Picker)
  * for the WebView, enabling Base64 upload support for Puter AI interactions.
- * UPDATED: Added Console Message interception and moved to HTTPS Origin for persistence.
- * CORE FIX: Intercepts Puter Web OS desktop redirect (/app) to auto-dismiss login popup.
- * TIMING FIX: Synchronized WebRTC permission requests to eliminate thread race conditions.
+ * UPDATED: Intercepts SPA history changes (doUpdateVisitedHistory) to auto-dismiss on Puter /app routing.
  */
 public class MyWebChromeClient extends WebChromeClient {
 
@@ -44,7 +42,7 @@ public class MyWebChromeClient extends WebChromeClient {
     private final Activity activity;
     private String currentPhotoPath;
     private Dialog authDialog; // Dialog to host the login popup WebView
-    private boolean isAuthProcessing = false; // Prevents the "Blinking" reload loop
+    private boolean isAuthProcessing = false; // Prevents reloading loops
     private String lastAuthUrl = null;
 
     public MyWebChromeClient(Activity activity) {
@@ -52,7 +50,7 @@ public class MyWebChromeClient extends WebChromeClient {
     }
 
     /**
-     * Capture JavaScript console logs and pipe them to Logcat.
+     * Capture JavaScript console logs and pipe them to Logcat and ActionReportLogger.
      */
     @Override
     public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
@@ -85,16 +83,15 @@ public class MyWebChromeClient extends WebChromeClient {
     public boolean onCreateWindow(WebView view, boolean isDialog, boolean isUserGesture, Message resultMsg) {
         if (activity == null) return false;
         WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
-        isAuthProcessing = false; // Reset lock for new window
+        isAuthProcessing = false;
 
         triggerNativeLog("Auth Popup Requested by SDK", "native");
 
-        // 1. Create a Layout to hold a Close Button + The Popup WebView
+        // 1. Layout container with fail-safe Close Button + Popup WebView
         LinearLayout dialogLayout = new LinearLayout(activity);
         dialogLayout.setOrientation(LinearLayout.VERTICAL);
         dialogLayout.setBackgroundColor(Color.WHITE);
 
-        // 2. Create a Fail-Safe "Done" Button
         Button closeButton = new Button(activity);
         closeButton.setText("Close Window (Tap when Signed In)");
         closeButton.setBackgroundColor(Color.parseColor("#1a73e8"));
@@ -108,7 +105,7 @@ public class MyWebChromeClient extends WebChromeClient {
                 ViewGroup.LayoutParams.MATCH_PARENT, 
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        // 3. Create and configure the new WebView for the popup
+        // 2. Configure the popup WebView
         final WebView popupWebView = new WebView(activity);
         dialogLayout.addView(popupWebView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 
@@ -117,6 +114,7 @@ public class MyWebChromeClient extends WebChromeClient {
         WebSettings webSettings = popupWebView.getSettings();
         webSettings.setJavaScriptEnabled(true);
         webSettings.setDomStorageEnabled(true);
+        webSettings.setDatabaseEnabled(true);
         webSettings.setJavaScriptCanOpenWindowsAutomatically(true);
         webSettings.setSupportMultipleWindows(true);
 
@@ -126,26 +124,13 @@ public class MyWebChromeClient extends WebChromeClient {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(popupWebView, true);
 
-        // 4. Monitor the popup for URL changes and post-login desktop routing
+        // 3. Monitor URL changes and SPA history transitions
         popupWebView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String url = request.getUrl().toString();
                 triggerNativeLog("Popup Navigating: " + url, "info");
-                lastAuthUrl = url;
-
-                AuthManager auth = AuthManager.getInstance(activity);
-                if (auth.isAuthCallback(url)) {
-                    if (!isAuthProcessing) {
-                        isAuthProcessing = true;
-                        triggerNativeLog("Auth completion marker found (/app or token). Finalizing session...", "native");
-                        view.postDelayed(() -> {
-                            CookieManager.getInstance().flush();
-                            closeAuthAndRefresh();
-                        }, 800);
-                    }
-                    return false;
-                }
+                checkAuthCompletion(view, url);
                 return false;
             }
 
@@ -153,24 +138,19 @@ public class MyWebChromeClient extends WebChromeClient {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 CookieManager.getInstance().flush();
-                lastAuthUrl = url;
                 triggerNativeLog("Popup Page Loaded: " + url, "info");
+                checkAuthCompletion(view, url);
+            }
 
-                AuthManager auth = AuthManager.getInstance(activity);
-                if (url != null && auth.isAuthCallback(url)) {
-                    if (!isAuthProcessing) {
-                        isAuthProcessing = true;
-                        triggerNativeLog("Auth callback recognized in onPageFinished. Closing dialog...", "native");
-                        view.postDelayed(() -> {
-                            CookieManager.getInstance().flush();
-                            closeAuthAndRefresh();
-                        }, 500);
-                    }
-                }
+            @Override
+            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                super.doUpdateVisitedHistory(view, url, isReload);
+                // Intercepts client-side SPA route changes to /app
+                checkAuthCompletion(view, url);
             }
         });
 
-        // 5. Handle official window.close() call from Puter SDK
+        // 4. Handle official window.close() call from Puter SDK
         popupWebView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onCloseWindow(WebView window) {
@@ -182,7 +162,7 @@ public class MyWebChromeClient extends WebChromeClient {
             }
         });
 
-        // 6. Show the Dialog
+        // 5. Show Dialog and transfer WebView transport
         authDialog = new Dialog(activity, android.R.style.Theme_DeviceDefault_NoActionBar);
         authDialog.setContentView(dialogLayout);
         authDialog.show();
@@ -191,6 +171,19 @@ public class MyWebChromeClient extends WebChromeClient {
         resultMsg.sendToTarget();
 
         return true;
+    }
+
+    private void checkAuthCompletion(WebView view, String url) {
+        if (url == null || isAuthProcessing || activity == null) return;
+        lastAuthUrl = url;
+
+        AuthManager auth = AuthManager.getInstance(activity);
+        if (auth.isAuthCallback(url)) {
+            isAuthProcessing = true;
+            triggerNativeLog("Puter auth completion detected: " + url + ". Closing dialog...", "native");
+            CookieManager.getInstance().flush();
+            view.postDelayed(this::closeAuthAndRefresh, 400);
+        }
     }
 
     private void triggerNativeLog(String msg, String type) {
@@ -219,6 +212,7 @@ public class MyWebChromeClient extends WebChromeClient {
 
         if (activity instanceof MainActivity) {
             activity.runOnUiThread(() -> {
+                ((MainActivity) activity).handleUrlChange(lastAuthUrl != null ? lastAuthUrl : "auth_success");
                 ((MainActivity) activity).reloadWebView();
             });
         }
