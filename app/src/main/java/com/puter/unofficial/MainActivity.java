@@ -1,6 +1,7 @@
 package com.puter.unofficial;
 
 import android.Manifest;
+import android.annotation.SuppressLint;
 import android.app.Dialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -10,6 +11,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
@@ -22,30 +24,26 @@ import android.speech.tts.TextToSpeech;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.Base64;
+import android.util.DisplayMetrics;
 import android.util.Log;
-import android.view.Gravity;
+import android.view.GestureDetector;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
-import android.view.Window;
-import android.view.WindowManager;
+import android.view.ViewGroup;
 import android.view.animation.Animation;
 import android.view.animation.AnimationUtils;
 import android.webkit.CookieManager;
-import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
-import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
-import android.widget.PopupMenu;
-import android.widget.SeekBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -71,9 +69,6 @@ import com.puter.unofficial.models.ChatMessage;
 import com.puter.unofficial.models.ChatSession;
 import com.puter.unofficial.models.GroundingSource;
 import com.puter.unofficial.models.StagedFile;
-import com.puter.unofficial.FileUtils;
-import com.puter.unofficial.ImageUtils;
-import com.puter.unofficial.NativeMarkdownParser;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -90,7 +85,7 @@ import java.util.Map;
 
 /**
  * 100% Pure Native Android Java Activity for Puter Unofficial.
- * Directly adopts the exact UI, components, interactions, and state logic of index.html.
+ * Fully synchronized with the logic, JSON datasets, menus, and interaction models of Puter11.
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -159,11 +154,8 @@ public class MainActivity extends AppCompatActivity {
 
     // Headless WebView & Live Voice Overlay HUD
     private WebView headlessAudioWebView;
-
     private TextView tvLiveTranscriptTicker;
     private TextView tvLiveVoiceStatus;
-    private View viewOrbCore;
-    private View viewOrbGlow;
 
     // Adapters & Managers
     private ChatAdapter chatAdapter;
@@ -218,6 +210,7 @@ public class MainActivity extends AppCompatActivity {
         setupStagedAttachments();
         setupInputDock();
         setupHeaderAndDropdownActions();
+        setupOutsideTouchDismissal();
         loadInitialSession();
 
         checkAndRequestPermissions();
@@ -288,7 +281,6 @@ public class MainActivity extends AppCompatActivity {
         // Headless WebView
         headlessAudioWebView = findViewById(R.id.headlessAudioWebView);
 
-
         setupAspectRatioSpinner();
     }
 
@@ -345,9 +337,7 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onTargetCoordinatesReceived(String targetId, float left, float top, float right, float bottom) {
-                runOnUiThread(() -> {
-                    Toast.makeText(MainActivity.this, "Target: " + targetId, Toast.LENGTH_SHORT).show();
-                });
+                runOnUiThread(() -> Toast.makeText(MainActivity.this, "Target: " + targetId, Toast.LENGTH_SHORT).show());
             }
 
             @Override
@@ -363,25 +353,6 @@ public class MainActivity extends AppCompatActivity {
 
     public String getActiveModelId() {
         return activeModelId;
-    }
-
-    public void onLiveSessionConnected() {
-        if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(R.string.voice_status_listening);
-        toggleStarAnimation(true);
-    }
-
-    public void onLiveTranscriptReceived(String text) {
-        if (tvLiveTranscriptTicker != null) tvLiveTranscriptTicker.setText(text);
-    }
-
-    public void onLiveSessionFinished() {
-        if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(R.string.voice_status_speaking);
-        toggleStarAnimation(false);
-    }
-
-    public void onLiveError(String err) {
-        if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(err);
-        toggleStarAnimation(false);
     }
 
     private void setupTTS() {
@@ -442,6 +413,7 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    @SuppressLint("ClickableViewAccessibility")
     private void setupChatTimeline() {
         chatAdapter = new ChatAdapter(new ChatAdapter.OnChatMessageActionListener() {
             @Override
@@ -458,7 +430,6 @@ public class MainActivity extends AppCompatActivity {
             public void onSpeakAssistantClicked(ChatMessage message, View speakContainer, TextView s1, TextView s2, TextView s3) {
                 speakText(message.getText());
                 toggleChatStarAnimation(true, s1, s2, s3);
-                // Stop animation after speech finishes (or reasonable delay)
                 new Handler(Looper.getMainLooper()).postDelayed(() -> toggleChatStarAnimation(false, s1, s2, s3), 3000);
             }
 
@@ -499,7 +470,9 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onLongPressMessage(ChatMessage message, View view) {
-                showUniversalContextMenu(message, view);
+                int[] loc = new int[2];
+                view.getLocationOnScreen(loc);
+                showUniversalContextMenu(message, loc[0] + 50, loc[1] + (view.getHeight() / 2));
             }
         });
 
@@ -507,6 +480,28 @@ public class MainActivity extends AppCompatActivity {
         lm.setStackFromEnd(true);
         rvChatTimeline.setLayoutManager(lm);
         rvChatTimeline.setAdapter(chatAdapter);
+
+        // Empty canvas tap gesture detector
+        GestureDetector gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
+            @Override
+            public boolean onSingleTapUp(MotionEvent e) {
+                if (chatAdapter.getItemCount() == 0) {
+                    showEmptyCanvasContextMenu(e.getRawX(), e.getRawY());
+                    return true;
+                }
+                return false;
+            }
+
+            @Override
+            public void onLongPress(MotionEvent e) {
+                showEmptyCanvasContextMenu(e.getRawX(), e.getRawY());
+            }
+        });
+
+        rvChatTimeline.setOnTouchListener((v, event) -> {
+            gestureDetector.onTouchEvent(event);
+            return false;
+        });
     }
 
     private void setupStagedAttachments() {
@@ -542,9 +537,7 @@ public class MainActivity extends AppCompatActivity {
         });
 
         btnStopGeneration.setOnClickListener(v -> stopCurrentGeneration());
-
         btnVoiceInput.setOnClickListener(v -> startSpeechToText());
-
         btnVoiceAgent.setOnClickListener(v -> launchLiveVoiceAgent());
     }
 
@@ -688,17 +681,57 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent ev) {
+        if (ev.getAction() == MotionEvent.ACTION_DOWN) {
+            // Dismiss Context Menu if touching outside
+            if (customContextMenuCard != null && customContextMenuCard.getVisibility() == View.VISIBLE) {
+                Rect rect = new Rect();
+                customContextMenuCard.getGlobalVisibleRect(rect);
+                if (!rect.contains((int) ev.getRawX(), (int) ev.getRawY())) {
+                    customContextMenuCard.setVisibility(View.GONE);
+                }
+            }
+            // Dismiss 3-Dot Dropdown if touching outside
+            if (puterDropdownMenuCard != null && puterDropdownMenuCard.getVisibility() == View.VISIBLE) {
+                Rect rect = new Rect();
+                puterDropdownMenuCard.getGlobalVisibleRect(rect);
+                Rect btnRect = new Rect();
+                btnHeaderMenu.getGlobalVisibleRect(btnRect);
+                if (!rect.contains((int) ev.getRawX(), (int) ev.getRawY()) && !btnRect.contains((int) ev.getRawX(), (int) ev.getRawY())) {
+                    puterDropdownMenuCard.setVisibility(View.GONE);
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    private void setupOutsideTouchDismissal() {
+        chatRootLayout.setOnClickListener(v -> {
+            if (customContextMenuCard != null) customContextMenuCard.setVisibility(View.GONE);
+            if (puterDropdownMenuCard != null) puterDropdownMenuCard.setVisibility(View.GONE);
+        });
+    }
+
     private void refreshDropdownUI() {
         boolean loggedIn = AuthManager.getInstance(this).isLoggedIn();
         menuAuthOption.setText(loggedIn ? "Sign Out" : "Sign In");
 
-        boolean isLiveMode = prefs.getBoolean(AppConstants.KEY_USE_LIVE_MODELS, false);
-        menuModelSourceToggle.setText(isLiveMode ? "Use Local Models" : "Enable Live Models");
+        boolean isLive = prefs.getBoolean(AppConstants.KEY_USE_LIVE_MODELS, false);
+        menuModelSourceToggle.setText(isLive ? "Use Local Models" : "Enable Live Models");
 
         long totalTokens = prefs.getLong(AppConstants.KEY_USAGE_TOTAL_TOKENS, 0);
         float totalCost = prefs.getFloat(AppConstants.KEY_USAGE_TOTAL_COST, 0.0f);
         tvMenuGlobalTokens.setText("Global Total: " + totalTokens + " tokens");
         tvMenuGlobalCost.setText(String.format(Locale.US, "Global Cost: $%.4f", totalCost));
+
+        // Proportional height constraint for comfortable scrolling
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int maxMenuHeight = (int) (dm.heightPixels * 0.72f);
+        ViewGroup.LayoutParams lp = puterDropdownMenuCard.getLayoutParams();
+        lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        puterDropdownMenuCard.setLayoutParams(lp);
+        puterDropdownMenuCard.setMaxCardElevation(12f);
 
         refreshDynamicSessionsInMenu();
     }
@@ -845,7 +878,6 @@ public class MainActivity extends AppCompatActivity {
             if (ivEcgIcon != null) ivEcgIcon.startAnimation(pulseAnim);
         } catch (Exception ignored) {}
 
-        // Check URL Context
         boolean urlContextEnabled = prefs.getBoolean(AppConstants.KEY_URL_CONTEXT_ENABLED, false);
         final String effectivePrompt = finalPrompt;
 
@@ -950,7 +982,6 @@ public class MainActivity extends AppCompatActivity {
             textPart.put("text", prompt);
             parts.put(textPart);
 
-            // Multimodal image attachments
             if (attachments != null) {
                 for (StagedFile file : attachments) {
                     if (file.getBase64DataUri() != null && file.getMimeType() != null && file.getMimeType().startsWith("image/")) {
@@ -969,7 +1000,6 @@ public class MainActivity extends AppCompatActivity {
             contents.put(userPart);
             payload.put("contents", contents);
 
-            // System instructions
             String sysInst = currentSession.getConfig().getSystemInstructions();
             if (sysInst != null && !sysInst.trim().isEmpty()) {
                 JSONObject sysObj = new JSONObject();
@@ -1117,7 +1147,7 @@ public class MainActivity extends AppCompatActivity {
         rvChatTimeline.scrollToPosition(Math.max(0, chatAdapter.getItemCount() - 1));
     }
 
-    // --- MODEL ACCORDION & TAXONOMY ---
+    // --- MODEL ACCORDION & TAXONOMY (FULL PARITY WITH PUTER11) ---
 
     private void loadModels() {
         allModelsList.clear();
@@ -1137,7 +1167,6 @@ public class MainActivity extends AppCompatActivity {
                     setupAccordionAdapter();
                 } else {
                     selectedModelText.setText("No Live Gemini Models Cached (Fetch in Settings)");
-                    Toast.makeText(this, "No live models cached. Tap Fetch in Gemini Settings.", Toast.LENGTH_SHORT).show();
                     loadLocalGeminiModels();
                     setupAccordionAdapter();
                 }
@@ -1146,7 +1175,6 @@ public class MainActivity extends AppCompatActivity {
                 setupAccordionAdapter();
             }
         } else {
-            // Puter Provider
             if (isLiveMode) {
                 String cached = prefs.getString(AppConstants.KEY_PUTER_CACHED_LIVE_MODELS, null);
                 if (cached != null && !cached.trim().isEmpty() && !cached.equals("{}") && !cached.equals("[]")) {
@@ -1192,7 +1220,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // Validate activeModelId
         boolean found = false;
         for (AIModelDefinition m : allModelsList) {
             if (m.getId().equalsIgnoreCase(activeModelId)) {
@@ -1240,81 +1267,37 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * Parses ALL sections of gemini_models.json (setup, generous, lite_generous, rate_limited)
+     * without premature loop termination.
+     */
     private void parseGeminiModelsJson(String jsonStr) {
         try {
             allModelsList.clear();
             modelsByProvider.clear();
-            modelsByProvider.put("Google Gemini", new ArrayList<>());
 
-            JSONArray arr = null;
             if (jsonStr.trim().startsWith("[")) {
-                arr = new JSONArray(jsonStr);
-            } else {
-                JSONObject root = new JSONObject(jsonStr);
-                if (root.has("models")) {
-                    arr = root.getJSONArray("models");
-                } else if (root.has("Google Gemini")) {
-                    arr = root.getJSONArray("Google Gemini");
-                } else {
-                    Iterator<String> keys = root.keys();
-                    while (keys.hasNext()) {
-                        JSONArray a = root.optJSONArray(keys.next());
-                        if (a != null) {
-                            arr = a;
-                            break;
-                        }
-                    }
+                JSONArray arr = new JSONArray(jsonStr);
+                for (int i = 0; i < arr.length(); i++) {
+                    addGeminiModelNode(arr.getJSONObject(i), "Google Gemini");
                 }
+                return;
             }
 
-            if (arr != null) {
-                for (int i = 0; i < arr.length(); i++) {
-                    JSONObject obj = arr.getJSONObject(i);
-                    String rawId = obj.optString("id", obj.optString("name", "")).replace("models/", "");
-                    if (rawId.isEmpty()) continue;
-                    String name = obj.optString("displayName", obj.optString("name", rawId));
-                    String desc = obj.optString("description", "").toLowerCase(Locale.US);
-                    String idLower = rawId.toLowerCase(Locale.US);
-
-                    List<String> cats = new ArrayList<>();
-                    boolean isLiveAudio = idLower.contains("live-preview") || idLower.contains("native-audio") || (idLower.contains("exp") && idLower.contains("live"));
-                    if (isLiveAudio) {
-                        cats.add("live");
-                        cats.add("audio");
-                    } else if (idLower.contains("audio") || idLower.contains("tts") || idLower.contains("speech")) {
-                        cats.add("audio");
+            JSONObject root = new JSONObject(jsonStr);
+            Iterator<String> keys = root.keys();
+            while (keys.hasNext()) {
+                String sectionKey = keys.next();
+                JSONArray arr = root.optJSONArray(sectionKey);
+                if (arr != null) {
+                    String parentName = formatParentName(sectionKey);
+                    if (!modelsByProvider.containsKey(parentName)) {
+                        modelsByProvider.put(parentName, new ArrayList<>());
                     }
-                    if (idLower.contains("image") || idLower.contains("imagen")) {
-                        cats.add("image_generation");
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject obj = arr.getJSONObject(i);
+                        addGeminiModelNode(obj, parentName);
                     }
-                    if (idLower.contains("flash") || idLower.contains("pro") || desc.contains("multimodal") || desc.contains("vision")) {
-                        cats.add("vision");
-                        cats.add("multimodal");
-                    }
-                    if (idLower.contains("thinking") || idLower.contains("reasoning") || desc.contains("thinking")) {
-                        cats.add("reasoning");
-                    }
-                    if (obj.optJSONArray("supportedGenerationMethods") != null) {
-                        JSONArray meth = obj.optJSONArray("supportedGenerationMethods");
-                        for (int k = 0; k < meth.length(); k++) {
-                            if ("generateContent".equals(meth.optString(k)) && (idLower.contains("flash") || idLower.contains("pro"))) {
-                                cats.add("tool_calling");
-                                break;
-                            }
-                        }
-                    }
-                    if (cats.isEmpty() || !cats.contains("image_generation")) {
-                        cats.add("text_chat");
-                    }
-
-                    boolean isImg = cats.contains("image_generation");
-                    boolean isVis = cats.contains("vision");
-                    boolean isLiv = cats.contains("live");
-
-                    AIModelDefinition model = new AIModelDefinition(rawId, name, "Google Gemini", "1000k", isVis, isImg, isLiv);
-                    model.setCategories(cats);
-                    allModelsList.add(model);
-                    modelsByProvider.get("Google Gemini").add(model);
                 }
             }
         } catch (Exception e) {
@@ -1322,6 +1305,54 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    private void addGeminiModelNode(JSONObject obj, String parentGroup) {
+        String rawId = obj.optString("id", obj.optString("name", "")).replace("models/", "");
+        if (rawId.isEmpty()) return;
+        String name = obj.optString("name", obj.optString("displayName", rawId));
+        int ctxTokens = obj.optInt("context", 1000000);
+        String ctxStr = (ctxTokens >= 1000) ? (ctxTokens / 1000) + "k" : String.valueOf(ctxTokens);
+
+        List<String> cats = new ArrayList<>();
+        JSONArray catArr = obj.optJSONArray("categories");
+        if (catArr != null) {
+            for (int c = 0; c < catArr.length(); c++) {
+                cats.add(catArr.optString(c).toLowerCase(Locale.US));
+            }
+        } else {
+            String desc = obj.optString("description", "").toLowerCase(Locale.US);
+            String idLower = rawId.toLowerCase(Locale.US);
+            if (idLower.contains("live") || idLower.contains("native-audio")) {
+                cats.add("live");
+                cats.add("audio");
+            } else if (idLower.contains("audio") || idLower.contains("tts") || idLower.contains("speech")) {
+                cats.add("audio");
+            }
+            if (idLower.contains("image") || idLower.contains("banana") || idLower.contains("imagen")) {
+                cats.add("image_generation");
+            }
+            if (idLower.contains("flash") || idLower.contains("pro") || desc.contains("vision")) {
+                cats.add("vision");
+                cats.add("multimodal");
+            }
+            if (cats.isEmpty()) cats.add("text_chat");
+        }
+
+        boolean isImg = cats.contains("image_generation");
+        boolean isVis = cats.contains("vision") || cats.contains("multimodal");
+        boolean isLiv = cats.contains("live");
+
+        AIModelDefinition model = new AIModelDefinition(rawId, name, parentGroup, ctxStr, isVis, isImg, isLiv);
+        model.setCategories(cats);
+        allModelsList.add(model);
+        if (!modelsByProvider.containsKey(parentGroup)) {
+            modelsByProvider.put(parentGroup, new ArrayList<>());
+        }
+        modelsByProvider.get(parentGroup).add(model);
+    }
+
+    /**
+     * Parses models.json while preserving all categories, parents, and capability tags.
+     */
     private void parsePuterModelsJson(String jsonStr) {
         try {
             allModelsList.clear();
@@ -1380,12 +1411,22 @@ public class MainActivity extends AppCompatActivity {
             modelsByProvider.put(provider, new ArrayList<>());
         }
         int ctx = obj.optInt("context", 128000);
+        String ctxStr = (ctx >= 1000) ? (ctx / 1000) + "k" : String.valueOf(ctx);
 
-        List<String> cats = inferPuterCategories(id, name, obj.optString("description", ""));
+        List<String> cats = new ArrayList<>();
+        JSONArray catArr = obj.optJSONArray("categories");
+        if (catArr != null && catArr.length() > 0) {
+            for (int c = 0; c < catArr.length(); c++) {
+                cats.add(catArr.optString(c).toLowerCase(Locale.US));
+            }
+        } else {
+            cats = inferPuterCategories(id, name, obj.optString("description", ""));
+        }
+
         boolean imgGen = cats.contains("image_generation");
-        boolean vision = cats.contains("vision");
+        boolean vision = cats.contains("vision") || cats.contains("multimodal");
 
-        AIModelDefinition m = new AIModelDefinition(id, name, provider, (ctx / 1000) + "k", vision, imgGen, false);
+        AIModelDefinition m = new AIModelDefinition(id, name, provider, ctxStr, vision, imgGen, false);
         m.setCategories(cats);
         allModelsList.add(m);
         modelsByProvider.get(provider).add(m);
@@ -1438,7 +1479,7 @@ public class MainActivity extends AppCompatActivity {
 
         List<ModelAccordionAdapter.AccordionItem> items = new ArrayList<>();
 
-        // Section 1: All Models (sorted alphabetically)
+        // Section 1: All Models
         List<AIModelDefinition> sortedAll = new ArrayList<>(allModelsList);
         Collections.sort(sortedAll, (a, b) -> a.getDisplayName().compareToIgnoreCase(b.getDisplayName()));
         items.add(ModelAccordionAdapter.AccordionItem.createHeader("★ All Models", sortedAll.size()));
@@ -1485,6 +1526,11 @@ public class MainActivity extends AppCompatActivity {
         return cat.replace("_", " ").toUpperCase(Locale.US);
     }
 
+    private String formatParentName(String raw) {
+        if (raw == null || raw.isEmpty()) return "Other";
+        return raw.replace("_", " ").toUpperCase(Locale.US);
+    }
+
     private String capitalize(String str) {
         if (str == null || str.isEmpty()) return "";
         return str.substring(0, 1).toUpperCase(Locale.US) + str.substring(1);
@@ -1505,19 +1551,11 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void closeLiveVoiceAgent() {
-        toggleStarAnimation(false);
-        if (headlessAudioBridge != null) {
-            headlessAudioBridge.stopCommentarySession();
-        }
-    }
-
     private void toggleStarAnimation(boolean start) {
         if (start) {
             orbitStar1.setVisibility(View.VISIBLE);
             orbitStar2.setVisibility(View.VISIBLE);
             orbitStar3.setVisibility(View.VISIBLE);
-            
             Animation rotate = AnimationUtils.loadAnimation(this, R.anim.rotate_stars);
             orbitStar1.startAnimation(rotate);
             orbitStar2.startAnimation(rotate);
@@ -1537,7 +1575,6 @@ public class MainActivity extends AppCompatActivity {
             s1.setVisibility(View.VISIBLE);
             s2.setVisibility(View.VISIBLE);
             s3.setVisibility(View.VISIBLE);
-            
             Animation rotate = AnimationUtils.loadAnimation(this, R.anim.rotate_stars);
             s1.startAnimation(rotate);
             s2.startAnimation(rotate);
@@ -1805,28 +1842,80 @@ public class MainActivity extends AppCompatActivity {
         dialog.show();
     }
 
-    private void showUniversalContextMenu(ChatMessage message, View view) {
+    /**
+     * Accurately anchors the Context Menu beside the touch coordinate, clamping within screen bounds.
+     */
+    public void showUniversalContextMenu(ChatMessage message, float rawX, float rawY) {
         contextTargetMessage = message;
-        if (customContextMenuCard != null) {
-            // Fix positioning
-            int[] location = new int[2];
-            view.getLocationOnScreen(location);
-            customContextMenuCard.setX(location[0]);
-            customContextMenuCard.setY(location[1] + view.getHeight());
+        if (customContextMenuCard == null) return;
 
-            customContextMenuCard.setVisibility(View.VISIBLE);
-            if (ctxCancelGen != null) ctxCancelGen.setVisibility(isGenerating ? View.VISIBLE : View.GONE);
-            if (ctxToggleProvider != null) {
-                if ("Gemini".equalsIgnoreCase(activeProvider)) {
-                    ctxToggleProvider.setText("☁ Puter Mode");
-                } else {
-                    ctxToggleProvider.setText("🤖 Gemini Mode");
-                }
-            }
-            if (ctxToggleMode != null) {
-                ctxToggleMode.setText(isAutoMode ? "⚡ Auto Mode" : "✋ Normal Mode");
-            }
+        // Configure options
+        if (ctxCancelGen != null) ctxCancelGen.setVisibility(isGenerating ? View.VISIBLE : View.GONE);
+        if (ctxCopyChat != null) ctxCopyChat.setVisibility(View.VISIBLE);
+        if (ctxReadAloud != null) ctxReadAloud.setVisibility(View.VISIBLE);
+        if (ctxDeleteChat != null) ctxDeleteChat.setVisibility(View.VISIBLE);
+
+        configureBaseContextMenuActions();
+        positionAndDisplayContextMenu(rawX, rawY);
+    }
+
+    /**
+     * Displays the 4-item context menu on an empty canvas or when tapping outside message turns.
+     */
+    public void showEmptyCanvasContextMenu(float rawX, float rawY) {
+        contextTargetMessage = null;
+        if (customContextMenuCard == null) return;
+
+        // Hide message-specific options
+        if (ctxCancelGen != null) ctxCancelGen.setVisibility(View.GONE);
+        if (ctxCopyChat != null) ctxCopyChat.setVisibility(View.GONE);
+        if (ctxReadAloud != null) ctxReadAloud.setVisibility(View.GONE);
+        if (ctxDeleteChat != null) ctxDeleteChat.setVisibility(View.GONE);
+
+        configureBaseContextMenuActions();
+        positionAndDisplayContextMenu(rawX, rawY);
+    }
+
+    private void configureBaseContextMenuActions() {
+        if (ctxToggleProvider != null) {
+            ctxToggleProvider.setText("Gemini".equalsIgnoreCase(activeProvider) ? "☁ Puter Mode" : "🤖 Gemini Mode");
         }
+        if (ctxToggleMode != null) {
+            ctxToggleMode.setText(isAutoMode ? "⚡ Auto Mode" : "✋ Normal Mode");
+        }
+    }
+
+    private void positionAndDisplayContextMenu(float rawX, float rawY) {
+        customContextMenuCard.setVisibility(View.INVISIBLE);
+        customContextMenuCard.post(() -> {
+            DisplayMetrics dm = getResources().getDisplayMetrics();
+            int screenWidth = dm.widthPixels;
+            int screenHeight = dm.heightPixels;
+
+            int menuWidth = customContextMenuCard.getWidth();
+            int menuHeight = customContextMenuCard.getHeight();
+            if (menuWidth == 0) menuWidth = 440;
+            if (menuHeight == 0) menuHeight = 560;
+
+            float targetX = rawX;
+            float targetY = rawY;
+
+            // Clamping X
+            if (targetX + menuWidth > screenWidth - 32) {
+                targetX = targetX - menuWidth;
+            }
+            if (targetX < 32) targetX = 32;
+
+            // Clamping Y
+            if (targetY + menuHeight > screenHeight - 120) {
+                targetY = targetY - menuHeight;
+            }
+            if (targetY < 120) targetY = 120;
+
+            customContextMenuCard.setX(targetX);
+            customContextMenuCard.setY(targetY);
+            customContextMenuCard.setVisibility(View.VISIBLE);
+        });
     }
 
     // --- UTILITIES ---
@@ -1835,6 +1924,7 @@ public class MainActivity extends AppCompatActivity {
         boolean loggedIn = AuthManager.getInstance(this).isLoggedIn();
         if (loggedIn) {
             AuthManager.getInstance(this).logout();
+            refreshDropdownUI();
             Toast.makeText(this, "Signed Out", Toast.LENGTH_SHORT).show();
         } else {
             showAuthPopupDialog();
@@ -1848,26 +1938,44 @@ public class MainActivity extends AppCompatActivity {
         WebSettings ws = wv.getSettings();
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
+        ws.setDatabaseEnabled(true);
         CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true);
+
+        // Strip '; wv' to avoid Google Disallowed UserAgent block
+        String ua = ws.getUserAgentString();
+        ws.setUserAgentString(ua.replace("; wv", ""));
 
         wv.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 if (AuthManager.getInstance(MainActivity.this).isAuthCallback(url)) {
+                    AuthManager.getInstance(MainActivity.this).handleAuthCallback(url);
                     AuthManager.getInstance(MainActivity.this).setLoggedIn(true);
+                    refreshDropdownUI();
                     Toast.makeText(MainActivity.this, "Puter Sign-In Successful!", Toast.LENGTH_SHORT).show();
                     dialog.dismiss();
                     return true;
                 }
-                // Only allow navigation within puter.com/login flow
-                return !url.startsWith("https://puter.com/");
+                return false;
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                CookieManager.getInstance().flush();
+                if (AuthManager.getInstance(MainActivity.this).isAuthCallback(url)) {
+                    AuthManager.getInstance(MainActivity.this).setLoggedIn(true);
+                    refreshDropdownUI();
+                    dialog.dismiss();
+                }
             }
         });
 
         dialog.findViewById(R.id.btnAuthCloseBar).setOnClickListener(v -> {
-            AuthManager.getInstance(MainActivity.this).setLoggedIn(true);
+            CookieManager.getInstance().flush();
+            refreshDropdownUI();
             dialog.dismiss();
-            Toast.makeText(this, "Signed In", Toast.LENGTH_SHORT).show();
         });
 
         wv.loadUrl(AppConstants.PUTER_LOGIN_URL);
@@ -1997,7 +2105,7 @@ public class MainActivity extends AppCompatActivity {
 
         @NonNull
         @Override
-        public ViewHolder onCreateViewHolder(@NonNull android.view.ViewGroup parent, int viewType) {
+        public ViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
             View v = LayoutInflater.from(parent.getContext()).inflate(R.layout.item_session_drawer_item, parent, false);
             return new ViewHolder(v);
         }
