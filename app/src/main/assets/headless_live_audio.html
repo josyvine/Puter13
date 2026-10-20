@@ -12,11 +12,13 @@
  * 16kHz microphone capture, barge-in interruption detection, and vision tool calling.
  */
 let liveWs = null;
-let audioContext = null;
+let micAudioContext = null;
+let playbackAudioContext = null;
 let micMediaStream = null;
 let micScriptProcessor = null;
 let isSessionActive = false;
 let currentPersona = "";
+let nextPlaybackTime = 0;
 
 function getBridge() {
     return window.AndroidInterface || null;
@@ -26,23 +28,42 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
     if (isSessionActive) {
         window.stopCommentarySession();
     }
-    currentPersona = personaPrompt || "You are an intelligent real-time conversational AI voice assistant.";
     const bridge = getBridge();
     const apiKey = bridge ? bridge.getGeminiApiKey() : "";
-    let modelId = bridge ? bridge.getModelId() : "gemini-2.0-flash-exp";
-    if (!modelId || modelId.trim() === "" || !modelId.includes("gemini")) {
-        modelId = "gemini-2.0-flash-exp";
-    }
-    const voiceName = bridge ? bridge.getVoiceName() : "Puck";
 
-    if (!apiKey) {
+    // Resolve model ID safely without duplicate 'models/' prefix
+    let rawModel = "gemini-2.0-flash-exp";
+    if (personaPrompt && (personaPrompt.includes("gemini") || personaPrompt.includes("flash"))) {
+        rawModel = personaPrompt;
+    } else if (bridge && bridge.getModelId && bridge.getModelId()) {
+        rawModel = bridge.getModelId();
+    }
+    const cleanModel = rawModel.replace(/^models\//, "");
+
+    // Resolve system persona
+    currentPersona = "You are an intelligent real-time conversational AI voice assistant.";
+    if (bridge && bridge.getCustomInstruction && bridge.getCustomInstruction().trim().length > 0) {
+        currentPersona = bridge.getCustomInstruction();
+    } else if (personaPrompt && !personaPrompt.includes("gemini") && personaPrompt.trim().length > 0) {
+        currentPersona = personaPrompt;
+    }
+
+    // Resolve voice name
+    let voiceName = "Puck";
+    if (bridge && bridge.getGeminiVoice && bridge.getGeminiVoice()) {
+        voiceName = bridge.getGeminiVoice().split(" ")[0].trim();
+    } else if (bridge && bridge.getVoiceName && bridge.getVoiceName()) {
+        voiceName = bridge.getVoiceName().split(" ")[0].trim();
+    }
+
+    if (!apiKey || apiKey.trim().length === 0) {
         if (bridge && bridge.onLiveError) {
             bridge.onLiveError("Gemini API key is missing. Set your key in Settings.");
         }
         return;
     }
 
-    const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+    const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey.trim())}`;
     try {
         liveWs = new WebSocket(wsUrl);
     } catch (e) {
@@ -53,7 +74,7 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
     liveWs.onopen = function() {
         const setupMessage = {
             setup: {
-                model: "models/" + modelId,
+                model: "models/" + cleanModel,
                 generationConfig: {
                     responseModalities: ["AUDIO"],
                     speechConfig: {
@@ -94,9 +115,6 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
             }
         };
         liveWs.send(JSON.stringify(setupMessage));
-        if (bridge && bridge.onLiveSessionConnected) {
-            bridge.onLiveSessionConnected();
-        }
     };
 
     liveWs.onmessage = async function(event) {
@@ -108,7 +126,10 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
             if (payload.setupComplete) {
                 isSessionActive = true;
                 initMicrophoneCapture();
-                if (scriptText && scriptText.trim().length > 0) {
+                if (bridge && bridge.onLiveSessionConnected) {
+                    bridge.onLiveSessionConnected();
+                }
+                if (scriptText && scriptText.trim().length > 0 && scriptText !== "auto") {
                     sendTextMessage(scriptText);
                 }
                 return;
@@ -125,6 +146,7 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
             if (payload.serverContent) {
                 const content = payload.serverContent;
                 if (content.interrupted) {
+                    nextPlaybackTime = 0;
                     if (bridge && bridge.onLiveCommentaryText) {
                         bridge.onLiveCommentaryText("⚡ [Interrupted]");
                     }
@@ -143,11 +165,6 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
                         }
                     }
                 }
-                if (content.turnComplete) {
-                    if (bridge && bridge.onLiveCommentaryFinished) {
-                        bridge.onLiveCommentaryFinished();
-                    }
-                }
             }
 
             if (payload.toolCall && payload.toolCall.functionCalls) {
@@ -158,7 +175,6 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
                         if (bridge && bridge.onTargetCoordinatesReceived) {
                             bridge.onTargetCoordinatesReceived(tId, b[1] || 0, b[0] || 0, b[3] || 0, b[2] || 0);
                         }
-                        // Send function response back
                         const resp = {
                             toolResponse: {
                                 functionResponses: [
@@ -179,11 +195,12 @@ window.startCommentarySession = function(scriptText, personaPrompt) {
     };
 
     liveWs.onerror = function(err) {
-        if (bridge && bridge.onLiveError) bridge.onLiveError("WebSocket error occurred");
+        if (bridge && bridge.onLiveError) bridge.onLiveError("WebSocket connection error");
     };
 
     liveWs.onclose = function() {
         isSessionActive = false;
+        cleanupAudio();
         if (bridge && bridge.onLiveCommentaryFinished) {
             bridge.onLiveCommentaryFinished();
         }
@@ -227,18 +244,7 @@ window.groundTargetWithVision = function(base64Jpg, targetId, desc) {
 
 window.stopCommentarySession = function() {
     isSessionActive = false;
-    if (micMediaStream) {
-        micMediaStream.getTracks().forEach(t => t.stop());
-        micMediaStream = null;
-    }
-    if (micScriptProcessor) {
-        try { micScriptProcessor.disconnect(); } catch(e) {}
-        micScriptProcessor = null;
-    }
-    if (audioContext) {
-        try { audioContext.close(); } catch(e) {}
-        audioContext = null;
-    }
+    cleanupAudio();
     if (liveWs) {
         try { liveWs.close(); } catch(e) {}
         liveWs = null;
@@ -249,14 +255,45 @@ window.stopCommentarySession = function() {
     }
 };
 
+function cleanupAudio() {
+    if (micMediaStream) {
+        try { micMediaStream.getTracks().forEach(t => t.stop()); } catch(e) {}
+        micMediaStream = null;
+    }
+    if (micScriptProcessor) {
+        try { micScriptProcessor.disconnect(); } catch(e) {}
+        micScriptProcessor = null;
+    }
+    if (micAudioContext) {
+        try { micAudioContext.close(); } catch(e) {}
+        micAudioContext = null;
+    }
+    if (playbackAudioContext) {
+        try { playbackAudioContext.close(); } catch(e) {}
+        playbackAudioContext = null;
+    }
+    nextPlaybackTime = 0;
+}
+
 function initMicrophoneCapture() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        const bridge = getBridge();
+        if (bridge && bridge.onLiveError) bridge.onLiveError("Microphone API not supported on this device");
+        return;
+    }
+
     navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } })
         .then(stream => {
             micMediaStream = stream;
             const AudioCtx = window.AudioContext || window.webkitAudioContext;
-            const ctx = new AudioCtx({ sampleRate: 16000 });
-            const source = ctx.createMediaStreamSource(stream);
-            const processor = ctx.createScriptProcessor(4096, 1, 1);
+            if (!micAudioContext || micAudioContext.state === 'closed') {
+                micAudioContext = new AudioCtx({ sampleRate: 16000 });
+            }
+            if (micAudioContext.state === 'suspended') {
+                micAudioContext.resume();
+            }
+            const source = micAudioContext.createMediaStreamSource(stream);
+            const processor = micAudioContext.createScriptProcessor(4096, 1, 1);
 
             processor.onaudioprocess = function(e) {
                 if (!isSessionActive || !liveWs || liveWs.readyState !== WebSocket.OPEN) return;
@@ -287,20 +324,26 @@ function initMicrophoneCapture() {
             };
 
             source.connect(processor);
-            processor.connect(ctx.destination);
+            processor.connect(micAudioContext.destination);
             micScriptProcessor = processor;
         })
         .catch(err => {
             console.error("Mic access error:", err);
             const bridge = getBridge();
-            if (bridge && bridge.onLiveError) bridge.onLiveError("Mic permission required for Live Voice");
+            if (bridge && bridge.onLiveError) bridge.onLiveError("Microphone permission required for Live Voice: " + err.message);
         });
 }
 
 function playAudioChunk(base64Pcm) {
     try {
         const AudioCtx = window.AudioContext || window.webkitAudioContext;
-        if (!audioContext) audioContext = new AudioCtx({ sampleRate: 24000 });
+        if (!playbackAudioContext || playbackAudioContext.state === 'closed') {
+            playbackAudioContext = new AudioCtx({ sampleRate: 24000 });
+        }
+        if (playbackAudioContext.state === 'suspended') {
+            playbackAudioContext.resume();
+        }
+
         const binary = atob(base64Pcm);
         const bytes = new Uint8Array(binary.length);
         for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
@@ -308,12 +351,19 @@ function playAudioChunk(base64Pcm) {
         const float32 = new Float32Array(int16.length);
         for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
 
-        const buffer = audioContext.createBuffer(1, float32.length, 24000);
+        const buffer = playbackAudioContext.createBuffer(1, float32.length, 24000);
         buffer.copyToChannel(float32, 0);
-        const source = audioContext.createBufferSource();
+
+        const source = playbackAudioContext.createBufferSource();
         source.buffer = buffer;
-        source.connect(audioContext.destination);
-        source.start();
+        source.connect(playbackAudioContext.destination);
+
+        const now = playbackAudioContext.currentTime;
+        if (nextPlaybackTime < now) {
+            nextPlaybackTime = now;
+        }
+        source.start(nextPlaybackTime);
+        nextPlaybackTime += buffer.duration;
     } catch(e) {
         console.error("Playback error:", e);
     }
