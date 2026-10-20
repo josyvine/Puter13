@@ -153,7 +153,12 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         };
         holder.itemView.setOnTouchListener(touchListener);
 
-        // Long-press with exact touch coordinates
+        // Consume single tap so it NEVER triggers the context menu accidentally
+        holder.itemView.setOnClickListener(v -> {
+            // Intentionally consume single-click event
+        });
+
+        // Long-touch with exact touch coordinates (persists menu strictly on long press)
         holder.itemView.setOnLongClickListener(v -> {
             if (actionListener != null) {
                 float rx = touchListener.getLastRawX();
