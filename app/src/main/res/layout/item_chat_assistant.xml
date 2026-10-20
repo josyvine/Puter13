@@ -48,8 +48,8 @@
                 android:layout_height="18dp"
                 android:contentDescription="Save Image"
                 android:src="@drawable/ic_aspect_ratio"
-                android:tint="@color/text_muted"
-                android:visibility="gone" />
+                android:visibility="gone"
+                app:tint="@color/text_muted" />
         </LinearLayout>
 
         <!-- Markdown Formatted Text Body -->
@@ -57,9 +57,9 @@
             android:id="@+id/tvAssistantMessage"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:lineSpacingExtra="2dp"
             android:textColor="@color/chat_assistant_bubble_text"
-            android:textSize="15sp"
-            android:textIsSelectable="true" />
+            android:textSize="15sp" />
 
         <!-- Generated Image Container (For Image Models) -->
         <ImageView
@@ -120,7 +120,7 @@
                 android:contentDescription="Copy"
                 android:padding="2dp"
                 android:src="@drawable/ic_copy"
-                android:tint="@color/text_muted" />
+                app:tint="@color/text_muted" />
 
             <!-- Speak (TTS) with Orbiting Stars -->
             <FrameLayout
@@ -138,7 +138,7 @@
                     android:contentDescription="Speak"
                     android:padding="2dp"
                     android:src="@drawable/ic_speaker"
-                    android:tint="@color/text_muted" />
+                    app:tint="@color/text_muted" />
 
                 <TextView
                     android:id="@+id/orbitStar1"
@@ -181,7 +181,7 @@
                 android:contentDescription="Regenerate"
                 android:padding="2dp"
                 android:src="@drawable/ic_regenerate"
-                android:tint="@color/text_muted" />
+                app:tint="@color/text_muted" />
 
             <!-- Delete -->
             <ImageView
@@ -193,7 +193,7 @@
                 android:contentDescription="Delete"
                 android:padding="2dp"
                 android:src="@drawable/ic_stop"
-                android:tint="@color/text_muted" />
+                app:tint="@color/text_muted" />
         </LinearLayout>
     </LinearLayout>
 
