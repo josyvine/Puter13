@@ -31,9 +31,8 @@ import java.util.Date;
 import java.util.Locale;
 
 /**
- * Handles the native file upload functionality (Camera, Gallery, File Picker)
- * for the WebView, enabling Base64 upload support for Puter AI interactions.
- * UPDATED: Intercepts SPA history changes (doUpdateVisitedHistory) to auto-dismiss on Puter /app routing.
+ * Handles Puter SDK OAuth popup windows via onCreateWindow, prevents marketing page redirects,
+ * intercepts SPA route changes (/app) to auto-dismiss, and handles native file upload functionality.
  */
 public class MyWebChromeClient extends WebChromeClient {
 
@@ -41,17 +40,14 @@ public class MyWebChromeClient extends WebChromeClient {
     private ValueCallback<Uri[]> uploadMessage;
     private final Activity activity;
     private String currentPhotoPath;
-    private Dialog authDialog; // Dialog to host the login popup WebView
-    private boolean isAuthProcessing = false; // Prevents reloading loops
+    private Dialog authDialog;
+    private boolean isAuthProcessing = false;
     private String lastAuthUrl = null;
 
     public MyWebChromeClient(Activity activity) {
         this.activity = activity;
     }
 
-    /**
-     * Capture JavaScript console logs and pipe them to Logcat and ActionReportLogger.
-     */
     @Override
     public boolean onConsoleMessage(ConsoleMessage consoleMessage) {
         String logMsg = String.format(Locale.getDefault(), 
@@ -85,7 +81,7 @@ public class MyWebChromeClient extends WebChromeClient {
         WebView.WebViewTransport transport = (WebView.WebViewTransport) resultMsg.obj;
         isAuthProcessing = false;
 
-        triggerNativeLog("Auth Popup Requested by SDK", "native");
+        triggerNativeLog("Auth Popup Requested by Puter SDK", "native");
 
         // 1. Layout container with fail-safe Close Button + Popup WebView
         LinearLayout dialogLayout = new LinearLayout(activity);
@@ -117,6 +113,8 @@ public class MyWebChromeClient extends WebChromeClient {
         webSettings.setDatabaseEnabled(true);
         webSettings.setJavaScriptCanOpenWindowsAutomatically(true);
         webSettings.setSupportMultipleWindows(true);
+        webSettings.setAllowFileAccess(true);
+        webSettings.setAllowContentAccess(true);
 
         String userAgent = popupWebView.getSettings().getUserAgentString().replace("; wv", "");
         webSettings.setUserAgentString(userAgent);
@@ -124,12 +122,31 @@ public class MyWebChromeClient extends WebChromeClient {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(popupWebView, true);
 
-        // 3. Monitor URL changes and SPA history transitions
+        // 3. Monitor URL changes and bypass marketing landing page
         popupWebView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                String url = request.getUrl().toString();
+                if (request != null && request.getUrl() != null) {
+                    return handlePopupUrl(view, request.getUrl().toString());
+                }
+                return false;
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return handlePopupUrl(view, url);
+            }
+
+            private boolean handlePopupUrl(WebView view, String url) {
                 triggerNativeLog("Popup Navigating: " + url, "info");
+
+                // If redirected to Puter marketing homepage, force route to login form
+                if (isPuterMarketingLanding(url)) {
+                    triggerNativeLog("Marketing page intercepted. Redirecting to login...", "warn");
+                    view.loadUrl("https://puter.com/login");
+                    return true;
+                }
+
                 checkAuthCompletion(view, url);
                 return false;
             }
@@ -139,13 +156,23 @@ public class MyWebChromeClient extends WebChromeClient {
                 super.onPageFinished(view, url);
                 CookieManager.getInstance().flush();
                 triggerNativeLog("Popup Page Loaded: " + url, "info");
+
+                if (isPuterMarketingLanding(url)) {
+                    triggerNativeLog("Marketing page loaded. Redirecting to login...", "warn");
+                    view.loadUrl("https://puter.com/login");
+                    return;
+                }
+
                 checkAuthCompletion(view, url);
             }
 
             @Override
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 super.doUpdateVisitedHistory(view, url, isReload);
-                // Intercepts client-side SPA route changes to /app
+                if (isPuterMarketingLanding(url)) {
+                    view.loadUrl("https://puter.com/login");
+                    return;
+                }
                 checkAuthCompletion(view, url);
             }
         });
@@ -171,6 +198,17 @@ public class MyWebChromeClient extends WebChromeClient {
         resultMsg.sendToTarget();
 
         return true;
+    }
+
+    private boolean isPuterMarketingLanding(String url) {
+        if (url == null) return false;
+        String clean = url.trim().toLowerCase(Locale.US);
+        return clean.equals("https://puter.com") || 
+               clean.equals("https://puter.com/") || 
+               clean.equals("http://puter.com") || 
+               clean.equals("http://puter.com/") ||
+               clean.equals("https://www.puter.com") ||
+               clean.equals("https://www.puter.com/");
     }
 
     private void checkAuthCompletion(WebView view, String url) {
@@ -206,7 +244,9 @@ public class MyWebChromeClient extends WebChromeClient {
         }
 
         if (authDialog != null && authDialog.isShowing()) {
-            authDialog.dismiss();
+            try {
+                authDialog.dismiss();
+            } catch (Exception ignored) {}
             authDialog = null;
         }
 
@@ -221,7 +261,9 @@ public class MyWebChromeClient extends WebChromeClient {
     @Override
     public void onCloseWindow(WebView window) {
         if (authDialog != null && authDialog.isShowing()) {
-            authDialog.dismiss();
+            try {
+                authDialog.dismiss();
+            } catch (Exception ignored) {}
             authDialog = null;
         }
         super.onCloseWindow(window);
