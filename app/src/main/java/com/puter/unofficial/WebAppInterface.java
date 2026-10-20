@@ -20,8 +20,9 @@ import android.widget.Toast;
 import java.io.OutputStream;
 
 /**
- * JavaScript interface bridge specifically bound to headless_live_audio.html.
- * Handles Gemini Live Bidi WebSockets, live audio streams, transcripts, and vision tool events.
+ * JavaScript interface bridge bound to headless_live_audio.html.
+ * Handles Gemini Live Bidi WebSockets, Puter SDK authentication synchronization,
+ * live audio streams, transcripts, and vision tool events.
  */
 public class WebAppInterface {
 
@@ -48,26 +49,77 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public String getGeminiApiKey() {
-        String key = prefs.getString(AppConstants.KEY_GEMINI_API_KEY, "");
-        if (key == null || key.trim().isEmpty()) {
-            key = "AIzaSyBbwPg-mPKe4FNtfI8j07REFFjV6C-xVMw";
-        }
-        return key;
+        return prefs.getString(AppConstants.KEY_GEMINI_API_KEY, "");
     }
 
     @JavascriptInterface
     public String getModelId() {
         if (mainActivity != null) {
             String m = mainActivity.getActiveModelId();
-            if (m != null && m.contains("gemini")) return m;
+            if (m != null && !m.trim().isEmpty()) {
+                return m;
+            }
         }
-        return "gemini-2.0-flash-exp";
+        // Strict fallback to the primary supported live model from your configuration
+        return "gemini-3.1-flash-live-preview";
+    }
+
+    @JavascriptInterface
+    public String getGeminiVoice() {
+        String voice = prefs.getString("gemini_voice_character", "");
+        if (voice == null || voice.trim().isEmpty()) {
+            voice = prefs.getString(AppConstants.KEY_GEMINI_VOICE_NAME, "Puck");
+        }
+        return voice;
     }
 
     @JavascriptInterface
     public String getVoiceName() {
-        return prefs.getString("gemini_voice_name", "Puck");
+        return getGeminiVoice();
     }
+
+    @JavascriptInterface
+    public String getCustomInstruction() {
+        return prefs.getString(AppConstants.KEY_CUSTOM_INSTRUCTION, "");
+    }
+
+    // --- PUTER SDK AUTH SYNCHRONIZATION ---
+
+    @JavascriptInterface
+    public void onAuthStatusChanged(boolean isSignedIn) {
+        Log.d(TAG, "Puter SDK onAuthStatusChanged: " + isSignedIn);
+        AuthManager.getInstance(context).setLoggedIn(isSignedIn);
+        if (mainActivity != null) {
+            mainActivity.runOnUiThread(() -> mainActivity.reloadWebView());
+        }
+    }
+
+    @JavascriptInterface
+    public void saveAuthToken(String token) {
+        if (token != null && !token.isEmpty()) {
+            AuthManager.getInstance(context).setAuthToken(token);
+        }
+    }
+
+    @JavascriptInterface
+    public String getSavedAuthToken() {
+        return AuthManager.getInstance(context).getAuthToken();
+    }
+
+    @JavascriptInterface
+    public boolean isLoggedIn() {
+        return AuthManager.getInstance(context).isLoggedIn();
+    }
+
+    @JavascriptInterface
+    public void signOut() {
+        AuthManager.getInstance(context).logout();
+        if (mainActivity != null) {
+            mainActivity.runOnUiThread(() -> mainActivity.reloadWebView());
+        }
+    }
+
+    // --- LIVE WEBSOCKET & COMMENTARY CALLBACKS ---
 
     @JavascriptInterface
     public void onLiveSessionConnected() {
