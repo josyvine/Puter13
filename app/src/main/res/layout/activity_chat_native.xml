@@ -279,31 +279,39 @@
                                 android:src="@drawable/ic_sparkle_agent"
                                 app:tint="#1a73e8" />
 
+                            <!-- Star 1 (Top Center: 12 o'clock position) -->
                             <TextView
                                 android:id="@+id/orbitStar1"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:layout_gravity="center"
+                                android:layout_gravity="top|center_horizontal"
+                                android:layout_marginTop="2dp"
                                 android:text="✦"
                                 android:textColor="#1a73e8"
                                 android:textSize="11sp"
                                 android:visibility="invisible" />
 
+                            <!-- Star 2 (Bottom Right: 4 o'clock position) -->
                             <TextView
                                 android:id="@+id/orbitStar2"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:layout_gravity="center"
+                                android:layout_gravity="bottom|end"
+                                android:layout_marginEnd="3dp"
+                                android:layout_marginBottom="4dp"
                                 android:text="✦"
                                 android:textColor="#1a73e8"
                                 android:textSize="10sp"
                                 android:visibility="invisible" />
 
+                            <!-- Star 3 (Bottom Left: 8 o'clock position) -->
                             <TextView
                                 android:id="@+id/orbitStar3"
                                 android:layout_width="wrap_content"
                                 android:layout_height="wrap_content"
-                                android:layout_gravity="center"
+                                android:layout_gravity="bottom|start"
+                                android:layout_marginStart="3dp"
+                                android:layout_marginBottom="4dp"
                                 android:text="✦"
                                 android:textColor="#1a73e8"
                                 android:textSize="9sp"
@@ -351,10 +359,10 @@
                 android:paddingBottom="8dp" />
         </androidx.cardview.widget.CardView>
 
-        <!-- 7. Floating Scrollable Three-Dot Dropdown Menu (Proportional Height & Smooth Scrolling) -->
+        <!-- 7. Floating Scrollable Three-Dot Dropdown Menu (Compact 340dp Floating Box) -->
         <androidx.cardview.widget.CardView
             android:id="@+id/puterDropdownMenuCard"
-            android:layout_width="280dp"
+            android:layout_width="260dp"
             android:layout_height="wrap_content"
             android:layout_alignParentEnd="true"
             android:layout_marginTop="62dp"
@@ -365,7 +373,7 @@
 
             <ScrollView
                 android:layout_width="match_parent"
-                android:layout_height="wrap_content"
+                android:layout_height="340dp"
                 android:background="#ffffff"
                 android:fadeScrollbars="false"
                 android:fillViewport="true"
