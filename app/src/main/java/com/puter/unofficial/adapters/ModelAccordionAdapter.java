@@ -18,6 +18,7 @@ import com.puter.unofficial.models.AIModelDefinition;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 
 public class ModelAccordionAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
@@ -115,7 +116,7 @@ public class ModelAccordionAdapter extends RecyclerView.Adapter<RecyclerView.Vie
         if (holder instanceof HeaderViewHolder) {
             HeaderViewHolder h = (HeaderViewHolder) holder;
             h.tvTitle.setText(item.categoryName);
-            h.tvCount.setText(String.format("(%d)", item.childCount));
+            h.tvCount.setText(String.format(Locale.US, "(%d)", item.childCount));
             h.ivChevron.setImageResource(item.isExpanded ? R.drawable.ic_chevron_up : R.drawable.ic_chevron_down);
 
             h.itemView.setOnClickListener(v -> {
@@ -131,28 +132,60 @@ public class ModelAccordionAdapter extends RecyclerView.Adapter<RecyclerView.Vie
             AIModelDefinition m = item.model;
             if (m == null) return;
 
-            c.tvName.setText(m.getDisplayName());
-            c.tvContext.setText(m.getContextTokenLimit() != null ? m.getContextTokenLimit() : "");
+            // 1. Display Name with fallback
+            String displayName = m.getDisplayName();
+            if (displayName == null || displayName.trim().isEmpty()) {
+                displayName = m.getId();
+            }
+            c.tvName.setText(displayName);
 
+            // 2. Format Categories as clean subtitles e.g. "(text_chat, vision)" matching Puter11
+            List<String> cats = m.getCategories();
+            if (cats != null && !cats.isEmpty()) {
+                StringBuilder catStr = new StringBuilder("(");
+                for (int i = 0; i < cats.size(); i++) {
+                    catStr.append(cats.get(i).replace("_", " "));
+                    if (i < cats.size() - 1) catStr.append(", ");
+                }
+                catStr.append(")");
+                c.tvContext.setText(catStr.toString());
+                c.tvContext.setVisibility(View.VISIBLE);
+            } else if (m.getContextTokenLimit() != null && !m.getContextTokenLimit().trim().isEmpty()) {
+                c.tvContext.setText("(" + m.getContextTokenLimit() + " ctx)");
+                c.tvContext.setVisibility(View.VISIBLE);
+            } else {
+                c.tvContext.setText("(unknown)");
+                c.tvContext.setVisibility(View.VISIBLE);
+            }
+
+            // 3. Selection State
             boolean isSelected = m.getId().equalsIgnoreCase(selectedModelId);
             c.ivCheck.setVisibility(isSelected ? View.VISIBLE : View.GONE);
             c.tvName.setTextColor(isSelected ? Color.parseColor("#1a73e8") : Color.parseColor("#333333"));
+            c.tvContext.setTextColor(isSelected ? Color.parseColor("#5b93d9") : Color.parseColor("#777777"));
 
-            // Populate capability tags
+            // 4. Populate capability pill badges cleanly
             c.llTags.removeAllViews();
             Context ctx = c.itemView.getContext();
-            for (String tag : m.getCapabilityTags()) {
-                TextView tagView = new TextView(ctx);
-                tagView.setText(tag);
-                tagView.setTextSize(9f);
-                tagView.setTextColor(Color.parseColor("#1a73e8"));
-                tagView.setBackgroundResource(R.drawable.bg_pill_badge);
-                tagView.setPadding(10, 4, 10, 4);
-                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                lp.setMarginEnd(8);
-                tagView.setLayoutParams(lp);
-                c.llTags.addView(tagView);
+            List<String> tags = m.getCapabilityTags();
+            if (tags != null) {
+                for (String tag : tags) {
+                    if (tag.equalsIgnoreCase("text_chat") || tag.equalsIgnoreCase("unknown")) {
+                        continue; // Keep chips clean and reserved for notable capabilities
+                    }
+                    TextView tagView = new TextView(ctx);
+                    tagView.setText(tag.replace("_", " "));
+                    tagView.setTextSize(9.5f);
+                    tagView.setTextColor(Color.parseColor("#1a73e8"));
+                    tagView.setBackgroundResource(R.drawable.bg_pill_badge);
+                    tagView.setPadding(12, 3, 12, 3);
+
+                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    lp.setMarginEnd(8);
+                    tagView.setLayoutParams(lp);
+                    c.llTags.addView(tagView);
+                }
             }
 
             c.itemView.setOnClickListener(v -> {
