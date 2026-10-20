@@ -262,8 +262,7 @@ public class PuterWebViewClient extends WebViewClient {
             Log.i(TAG, "Authentication successful redirect detected: " + url);
             lastHandledAuthUrl = url;
 
-            // Extract and persist auth token
-            authManager.handleAuthCallback(url);
+            extractAndSaveTokenIfPresent(url);
             authManager.setLoggedIn(true);
             CookieManager.getInstance().flush();
 
@@ -274,6 +273,18 @@ public class PuterWebViewClient extends WebViewClient {
         }
 
         return false;
+    }
+
+    private void extractAndSaveTokenIfPresent(String url) {
+        try {
+            if (url != null && url.contains("token=")) {
+                Uri uri = Uri.parse(url);
+                String token = uri.getQueryParameter("token");
+                if (token != null && !token.isEmpty()) {
+                    authManager.saveAuthToken(token);
+                }
+            }
+        } catch (Exception ignored) {}
     }
 
     @Override
@@ -294,7 +305,7 @@ public class PuterWebViewClient extends WebViewClient {
 
         // Check if page finished on an auth confirmation URL
         if (url != null && authManager.isAuthCallback(url)) {
-            authManager.handleAuthCallback(url);
+            extractAndSaveTokenIfPresent(url);
             authManager.setLoggedIn(true);
             CookieManager.getInstance().flush();
         }
