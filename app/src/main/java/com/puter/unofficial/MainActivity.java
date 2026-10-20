@@ -21,6 +21,7 @@ import android.speech.RecognitionListener;
 import android.speech.RecognizerIntent;
 import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.text.Editable;
 import android.text.TextWatcher;
 import android.util.Base64;
@@ -304,8 +305,11 @@ public class MainActivity extends AppCompatActivity {
         webAppInterface.setMainActivity(this);
         headlessAudioBridge = new HeadlessAudioBridge(this, headlessAudioWebView);
         webAppInterface.setAudioBridge(headlessAudioBridge);
-        headlessAudioWebView.getSettings().setJavaScriptEnabled(true);
-        headlessAudioWebView.getSettings().setDomStorageEnabled(true);
+        
+        WebSettings ws = headlessAudioWebView.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setDomStorageEnabled(true);
+        ws.setMediaPlaybackRequiresUserGesture(false); // CRITICAL: Allows Web Audio API to play sound automatically
         headlessAudioWebView.addJavascriptInterface(webAppInterface, AppConstants.JS_BRIDGE_NAME);
 
         headlessAudioBridge.setEventListener(new HeadlessAudioBridge.LiveAudioEventListener() {
@@ -446,9 +450,8 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onSpeakAssistantClicked(ChatMessage message, View speakContainer, TextView s1, TextView s2, TextView s3) {
-                speakText(message.getText());
                 toggleChatStarAnimation(true, s1, s2, s3);
-                new Handler(Looper.getMainLooper()).postDelayed(() -> toggleChatStarAnimation(false, s1, s2, s3), 3000);
+                speakAssistantWithProgress(message.getText(), () -> toggleChatStarAnimation(false, s1, s2, s3));
             }
 
             @Override
@@ -520,6 +523,26 @@ public class MainActivity extends AppCompatActivity {
             gestureDetector.onTouchEvent(event);
             return false;
         });
+    }
+
+    private void speakAssistantWithProgress(String text, Runnable onFinished) {
+        if (textToSpeech != null && text != null) {
+            String utteranceId = "tts_" + System.currentTimeMillis();
+            textToSpeech.setOnUtteranceProgressListener(new UtteranceProgressListener() {
+                @Override public void onStart(String utteranceId) {}
+                @Override
+                public void onDone(String utteranceId) {
+                    runOnUiThread(onFinished);
+                }
+                @Override
+                public void onError(String utteranceId) {
+                    runOnUiThread(onFinished);
+                }
+            });
+            textToSpeech.speak(text, TextToSpeech.QUEUE_FLUSH, null, utteranceId);
+        } else {
+            onFinished.run();
+        }
     }
 
     private void setupStagedAttachments() {
@@ -743,12 +766,11 @@ public class MainActivity extends AppCompatActivity {
         tvMenuGlobalTokens.setText("Global Total: " + totalTokens + " tokens");
         tvMenuGlobalCost.setText(String.format(Locale.US, "Global Cost: $%.4f", totalCost));
 
-        // Proportional height constraint for comfortable scrolling
+        // Clamped height matching compact dimensions of Puter11 popup
         DisplayMetrics dm = getResources().getDisplayMetrics();
         ViewGroup.LayoutParams lp = puterDropdownMenuCard.getLayoutParams();
-        lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        lp.height = (int) (dm.heightPixels * 0.48f);
         puterDropdownMenuCard.setLayoutParams(lp);
-        puterDropdownMenuCard.setMaxCardElevation(12f);
 
         refreshDynamicSessionsInMenu();
     }
@@ -1284,10 +1306,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /**
-     * Parses ALL sections of gemini_models.json (setup, generous, lite_generous, rate_limited)
-     * without premature loop termination.
-     */
     private void parseGeminiModelsJson(String jsonStr) {
         try {
             allModelsList.clear();
@@ -1367,9 +1385,6 @@ public class MainActivity extends AppCompatActivity {
         modelsByProvider.get(parentGroup).add(model);
     }
 
-    /**
-     * Parses models.json while preserving all categories, parents, and capability tags.
-     */
     private void parsePuterModelsJson(String jsonStr) {
         try {
             allModelsList.clear();
@@ -1562,6 +1577,17 @@ public class MainActivity extends AppCompatActivity {
     // --- LIVE VOICE AGENT ---
 
     private void launchLiveVoiceAgent() {
+        String apiKey = prefs.getString(AppConstants.KEY_GEMINI_API_KEY, "");
+        if (apiKey.trim().isEmpty()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Gemini Live")
+                    .setMessage("Please configure a valid Gemini Access API key first in Settings.")
+                    .setPositiveButton("Open Settings", (d, w) -> showGeminiSettingsDialog())
+                    .setNegativeButton("Cancel", null)
+                    .show();
+            return;
+        }
+
         toggleStarAnimation(true);
         if (headlessAudioBridge != null) {
             headlessAudioBridge.startCommentarySession("auto", activeModelId);
@@ -1588,6 +1614,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void toggleChatStarAnimation(boolean start, TextView s1, TextView s2, TextView s3) {
+        if (s1 == null || s2 == null || s3 == null) return;
         if (start) {
             s1.setVisibility(View.VISIBLE);
             s2.setVisibility(View.VISIBLE);
@@ -1692,9 +1719,50 @@ public class MainActivity extends AppCompatActivity {
     private void showGeminiSettingsDialog() {
         BottomSheetDialog dialog = new BottomSheetDialog(this, R.style.BottomSheetDialogTheme);
         View sheet = LayoutInflater.from(this).inflate(R.layout.dialog_gemini_settings, null);
+        
         EditText etKey = sheet.findViewById(R.id.etGeminiApiKey);
         TextView tvStatus = sheet.findViewById(R.id.tvGeminiFetchStatus);
+        TextView tvGrounding = sheet.findViewById(R.id.tvGroundingMode);
+        TextView tvVoice = sheet.findViewById(R.id.tvVoiceCharacter);
+        
         etKey.setText(prefs.getString(AppConstants.KEY_GEMINI_API_KEY, ""));
+
+        // Grounding Mode Selector
+        String[] groundingModes = new String[]{"None (Standard)", "Google Search", "Google Maps"};
+        String currentGrounding = prefs.getString("gemini_grounding_mode", "None (Standard)");
+        if (tvGrounding != null) {
+            tvGrounding.setText(currentGrounding);
+            tvGrounding.setOnClickListener(v -> {
+                new AlertDialog.Builder(this)
+                        .setTitle("Select Grounding Mode")
+                        .setItems(groundingModes, (d, which) -> {
+                            String selected = groundingModes[which];
+                            prefs.edit().putString("gemini_grounding_mode", selected).apply();
+                            tvGrounding.setText(selected);
+                        })
+                        .show();
+            });
+        }
+
+        // Voice Character Selector
+        String[] voiceCharacters = new String[]{
+                "Aoede (Breezy)", "Charon (Informative)", "Kore (Firm)",
+                "Puck (Upbeat)", "Fenrir (Excitable)", "Leda (Youthful)", "Zephyr (Bright)"
+        };
+        String currentVoice = prefs.getString("gemini_voice_character", "Leda (Youthful)");
+        if (tvVoice != null) {
+            tvVoice.setText(currentVoice);
+            tvVoice.setOnClickListener(v -> {
+                new AlertDialog.Builder(this)
+                        .setTitle("Select Voice Character")
+                        .setItems(voiceCharacters, (d, which) -> {
+                            String selected = voiceCharacters[which];
+                            prefs.edit().putString("gemini_voice_character", selected).apply();
+                            tvVoice.setText(selected);
+                        })
+                        .show();
+            });
+        }
 
         sheet.findViewById(R.id.btnFetchGeminiModels).setOnClickListener(v -> {
             String key = etKey.getText().toString().trim();
@@ -1998,6 +2066,7 @@ public class MainActivity extends AppCompatActivity {
             dialog.dismiss();
         });
 
+        // Load dedicated embedded Puter OAuth authorization endpoint
         wv.loadUrl(AppConstants.PUTER_LOGIN_URL);
         dialog.show();
     }
@@ -2008,7 +2077,7 @@ public class MainActivity extends AppCompatActivity {
                 Uri uri = Uri.parse(url);
                 String token = uri.getQueryParameter("token");
                 if (token != null && !token.isEmpty()) {
-                    AuthManager.getInstance(this).saveAuthToken(token);
+                    AuthManager.getInstance(this).setAuthToken(token);
                 }
             }
         } catch (Exception ignored) {}
