@@ -2,6 +2,7 @@ package com.puter.unofficial;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.net.Uri;
 
 /**
  * Manages the persistent authentication state for Puter Unofficial.
@@ -75,6 +76,34 @@ public class AuthManager {
      */
     public void setAuthToken(String token) {
         prefs.edit().putString(KEY_AUTH_TOKEN, token).apply();
+    }
+
+    /**
+     * Alias method for setAuthToken to ensure compatibility across callers.
+     * 
+     * @param token The session token string.
+     */
+    public void saveAuthToken(String token) {
+        setAuthToken(token);
+    }
+
+    /**
+     * Handles redirect callback URLs, extracting and saving any token parameters
+     * before persisting the logged-in flag.
+     * 
+     * @param url The redirect URL intercepted from OAuth.
+     */
+    public void handleAuthCallback(String url) {
+        if (url != null && url.contains("token=")) {
+            try {
+                Uri uri = Uri.parse(url);
+                String token = uri.getQueryParameter("token");
+                if (token != null && !token.isEmpty()) {
+                    setAuthToken(token);
+                }
+            } catch (Exception ignored) {}
+        }
+        setLoggedIn(true);
     }
 
     /**
