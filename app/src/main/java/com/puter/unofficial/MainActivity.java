@@ -311,17 +311,12 @@ public class MainActivity extends AppCompatActivity {
         headlessAudioBridge.setEventListener(new HeadlessAudioBridge.LiveAudioEventListener() {
             @Override
             public void onSessionConnected() {
-                runOnUiThread(() -> {
-                    if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(R.string.voice_status_listening);
-                    toggleStarAnimation(true);
-                });
+                onLiveSessionConnected();
             }
 
             @Override
             public void onTranscriptReceived(String text) {
-                runOnUiThread(() -> {
-                    if (tvLiveTranscriptTicker != null) tvLiveTranscriptTicker.setText(text);
-                });
+                onLiveTranscriptReceived(text);
             }
 
             @Override
@@ -329,10 +324,7 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onCommentaryFinished() {
-                runOnUiThread(() -> {
-                    if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(R.string.voice_status_speaking);
-                    toggleStarAnimation(false);
-                });
+                onLiveSessionFinished();
             }
 
             @Override
@@ -342,10 +334,7 @@ public class MainActivity extends AppCompatActivity {
 
             @Override
             public void onError(String errorMessage) {
-                runOnUiThread(() -> {
-                    if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(errorMessage);
-                    toggleStarAnimation(false);
-                });
+                onLiveError(errorMessage);
             }
         });
         headlessAudioWebView.loadUrl(AppConstants.HEADLESS_AUDIO_URL);
@@ -353,6 +342,35 @@ public class MainActivity extends AppCompatActivity {
 
     public String getActiveModelId() {
         return activeModelId;
+    }
+
+    // --- PUBLIC METHODS CALLED BY WebAppInterface ---
+
+    public void onLiveSessionConnected() {
+        runOnUiThread(() -> {
+            if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(R.string.voice_status_listening);
+            toggleStarAnimation(true);
+        });
+    }
+
+    public void onLiveTranscriptReceived(String text) {
+        runOnUiThread(() -> {
+            if (tvLiveTranscriptTicker != null) tvLiveTranscriptTicker.setText(text);
+        });
+    }
+
+    public void onLiveSessionFinished() {
+        runOnUiThread(() -> {
+            if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(R.string.voice_status_speaking);
+            toggleStarAnimation(false);
+        });
+    }
+
+    public void onLiveError(String err) {
+        runOnUiThread(() -> {
+            if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(err);
+            toggleStarAnimation(false);
+        });
     }
 
     private void setupTTS() {
@@ -727,7 +745,6 @@ public class MainActivity extends AppCompatActivity {
 
         // Proportional height constraint for comfortable scrolling
         DisplayMetrics dm = getResources().getDisplayMetrics();
-        int maxMenuHeight = (int) (dm.heightPixels * 0.72f);
         ViewGroup.LayoutParams lp = puterDropdownMenuCard.getLayoutParams();
         lp.height = ViewGroup.LayoutParams.WRAP_CONTENT;
         puterDropdownMenuCard.setLayoutParams(lp);
@@ -1949,9 +1966,10 @@ public class MainActivity extends AppCompatActivity {
         wv.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                if (AuthManager.getInstance(MainActivity.this).isAuthCallback(url)) {
-                    AuthManager.getInstance(MainActivity.this).handleAuthCallback(url);
-                    AuthManager.getInstance(MainActivity.this).setLoggedIn(true);
+                AuthManager auth = AuthManager.getInstance(MainActivity.this);
+                if (auth.isAuthCallback(url)) {
+                    extractAndSaveTokenIfPresent(url);
+                    auth.setLoggedIn(true);
                     refreshDropdownUI();
                     Toast.makeText(MainActivity.this, "Puter Sign-In Successful!", Toast.LENGTH_SHORT).show();
                     dialog.dismiss();
@@ -1964,8 +1982,10 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 CookieManager.getInstance().flush();
-                if (AuthManager.getInstance(MainActivity.this).isAuthCallback(url)) {
-                    AuthManager.getInstance(MainActivity.this).setLoggedIn(true);
+                AuthManager auth = AuthManager.getInstance(MainActivity.this);
+                if (url != null && auth.isAuthCallback(url)) {
+                    extractAndSaveTokenIfPresent(url);
+                    auth.setLoggedIn(true);
                     refreshDropdownUI();
                     dialog.dismiss();
                 }
@@ -1980,6 +2000,18 @@ public class MainActivity extends AppCompatActivity {
 
         wv.loadUrl(AppConstants.PUTER_LOGIN_URL);
         dialog.show();
+    }
+
+    private void extractAndSaveTokenIfPresent(String url) {
+        try {
+            if (url != null && url.contains("token=")) {
+                Uri uri = Uri.parse(url);
+                String token = uri.getQueryParameter("token");
+                if (token != null && !token.isEmpty()) {
+                    AuthManager.getInstance(this).saveAuthToken(token);
+                }
+            }
+        } catch (Exception ignored) {}
     }
 
     private void toggleModelSource() {
