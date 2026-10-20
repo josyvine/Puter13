@@ -35,9 +35,12 @@ import android.view.ViewGroup;
 import android.view.animation.Animation;
 import android.view.animation.AnimationUtils;
 import android.webkit.CookieManager;
+import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.webkit.WebViewClient;
 import android.widget.ArrayAdapter;
+import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -85,7 +88,7 @@ import java.util.Map;
 
 /**
  * 100% Pure Native Android Java Activity for Puter Unofficial.
- * Uses genuine Puter.js SDK puter.auth.signIn() via MyWebChromeClient.onCreateWindow.
+ * Uses Puter SDK OAuth parameters (?embedded_in_popup=true&request_auth=true) to authenticate.
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -156,6 +159,9 @@ public class MainActivity extends AppCompatActivity {
     private WebView headlessAudioWebView;
     private TextView tvLiveTranscriptTicker;
     private TextView tvLiveVoiceStatus;
+
+    // Dialog reference for Puter Authentication
+    private Dialog puterAuthDialog;
 
     // Adapters & Managers
     private ChatAdapter chatAdapter;
@@ -311,19 +317,14 @@ public class MainActivity extends AppCompatActivity {
         ws.setSupportMultipleWindows(true);
         ws.setMediaPlaybackRequiresUserGesture(false);
 
-        // Strip '; wv' to operate in standard browser origin mode
         String userAgent = ws.getUserAgentString().replace("; wv", "");
         ws.setUserAgentString(userAgent);
 
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(headlessAudioWebView, true);
 
-        // Attach PuterWebViewClient for https://appassets.androidplatform.net virtual origin
         headlessAudioWebView.setWebViewClient(new PuterWebViewClient(this));
-
-        // Attach MyWebChromeClient to handle Puter SDK puter.auth.signIn() window.open() popups
         headlessAudioWebView.setWebChromeClient(new MyWebChromeClient(this));
-
         headlessAudioWebView.addJavascriptInterface(webAppInterface, AppConstants.JS_BRIDGE_NAME);
 
         headlessAudioBridge.setEventListener(new HeadlessAudioBridge.LiveAudioEventListener() {
@@ -356,7 +357,6 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Load through virtual HTTPS domain appassets.androidplatform.net for SDK compatibility
         headlessAudioWebView.loadUrl("https://appassets.androidplatform.net/assets/headless_live_audio.html");
     }
 
@@ -2062,7 +2062,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // --- PUTER SDK AUTHENTICATION MIRROR ---
+    // --- PUTER AUTHENTICATION POPUP (IDENTICAL TO OLD APP STRUCTURE) ---
 
     private void toggleAuthMirror() {
         boolean loggedIn = AuthManager.getInstance(this).isLoggedIn();
@@ -2074,17 +2074,118 @@ public class MainActivity extends AppCompatActivity {
                 headlessAudioWebView.evaluateJavascript("if (typeof puter !== 'undefined' && puter.auth) { puter.auth.signOut(); }", null);
             }
         } else {
-            // Trigger authentic Puter SDK Sign-In matching the old app
-            if (headlessAudioWebView != null) {
-                headlessAudioWebView.evaluateJavascript(
-                        "if (typeof puter !== 'undefined' && puter.auth) { " +
-                        "    puter.auth.signIn(); " +
-                        "} else { " +
-                        "    console.warn('Puter SDK initializing...'); " +
-                        "}", null
-                );
-            }
+            openPuterAuthDialog();
         }
+    }
+
+    /**
+     * Opens the authentic Puter OAuth login dialog with the Blue Bar button,
+     * loading ?embedded_in_popup=true&request_auth=true under the appassets domain origin.
+     */
+    @SuppressLint("SetJavaScriptEnabled")
+    private void openPuterAuthDialog() {
+        if (puterAuthDialog != null && puterAuthDialog.isShowing()) {
+            puterAuthDialog.dismiss();
+        }
+
+        // 1. Root Container identical to MyWebChromeClient layout in Puter11
+        LinearLayout dialogLayout = new LinearLayout(this);
+        dialogLayout.setOrientation(LinearLayout.VERTICAL);
+        dialogLayout.setBackgroundColor(Color.WHITE);
+
+        // 2. Blue Fail-Safe "Close Window" Button
+        Button closeButton = new Button(this);
+        closeButton.setText("Close Window (Tap when Signed In)");
+        closeButton.setBackgroundColor(Color.parseColor("#1a73e8"));
+        closeButton.setTextColor(Color.WHITE);
+        closeButton.setOnClickListener(v -> {
+            CookieManager.getInstance().flush();
+            if (puterAuthDialog != null && puterAuthDialog.isShowing()) {
+                puterAuthDialog.dismiss();
+            }
+            refreshDropdownUI();
+        });
+
+        dialogLayout.addView(closeButton, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // 3. Popup WebView configured with Puter origin headers
+        final WebView popupWebView = new WebView(this);
+        dialogLayout.addView(popupWebView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 
+                ViewGroup.LayoutParams.MATCH_PARENT));
+
+        WebSettings ws = popupWebView.getSettings();
+        ws.setJavaScriptEnabled(true);
+        ws.setDomStorageEnabled(true);
+        ws.setDatabaseEnabled(true);
+        ws.setJavaScriptCanOpenWindowsAutomatically(true);
+        ws.setSupportMultipleWindows(true);
+
+        String userAgent = ws.getUserAgentString().replace("; wv", "");
+        ws.setUserAgentString(userAgent);
+
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(popupWebView, true);
+
+        popupWebView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                if (request != null && request.getUrl() != null) {
+                    return checkAuthRedirect(request.getUrl().toString());
+                }
+                return false;
+            }
+
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                return checkAuthRedirect(url);
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                CookieManager.getInstance().flush();
+                checkAuthRedirect(url);
+            }
+
+            @Override
+            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                super.doUpdateVisitedHistory(view, url, isReload);
+                checkAuthRedirect(url);
+            }
+
+            private boolean checkAuthRedirect(String url) {
+                if (url == null) return false;
+                AuthManager auth = AuthManager.getInstance(MainActivity.this);
+                if (auth.isAuthCallback(url)) {
+                    auth.handleAuthCallback(url);
+                    auth.setLoggedIn(true);
+                    CookieManager.getInstance().flush();
+                    runOnUiThread(() -> {
+                        refreshDropdownUI();
+                        Toast.makeText(MainActivity.this, "Puter Sign-In Successful!", Toast.LENGTH_SHORT).show();
+                        if (puterAuthDialog != null && puterAuthDialog.isShowing()) {
+                            puterAuthDialog.dismiss();
+                        }
+                    });
+                    return true;
+                }
+                return false;
+            }
+        });
+
+        puterAuthDialog = new Dialog(this, android.R.style.Theme_DeviceDefault_NoActionBar);
+        puterAuthDialog.setContentView(dialogLayout);
+        puterAuthDialog.show();
+
+        // Load the exact Puter SDK authorization endpoint with appassets origin
+        String sdkAuthUrl = "https://puter.com/?embedded_in_popup=true&request_auth=true";
+        java.util.Map<String, String> headers = new java.util.HashMap<>();
+        headers.put("Origin", "https://appassets.androidplatform.net");
+        headers.put("Referer", "https://appassets.androidplatform.net/");
+        popupWebView.loadUrl(sdkAuthUrl, headers);
     }
 
     private void toggleModelSource() {
@@ -2193,6 +2294,9 @@ public class MainActivity extends AppCompatActivity {
         if (headlessAudioBridge != null) {
             headlessAudioBridge.stopCommentarySession();
         }
+        if (puterAuthDialog != null && puterAuthDialog.isShowing()) {
+            puterAuthDialog.dismiss();
+        }
     }
 
     private static class SessionHistoryAdapter extends RecyclerView.Adapter<SessionHistoryAdapter.ViewHolder> {
@@ -2240,3 +2344,5 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 }
+
+
