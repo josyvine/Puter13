@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Headless Live Audio Engine</title>
+</head>
+<body>
+<script>
+/**
+ * Headless Live Audio & WebSocket Bridge for Puter Unofficial
+ * Handles Gemini Live BidiGenerateContent WebSocket, 24kHz audio streaming,
+ * 16kHz microphone capture, barge-in interruption detection, and vision tool calling.
+ */
+let liveWs = null;
+let audioContext = null;
+let micMediaStream = null;
+let micScriptProcessor = null;
+let isSessionActive = false;
+let currentPersona = "";
+
+function getBridge() {
+    return window.AndroidInterface || null;
+}
+
+window.startCommentarySession = function(scriptText, personaPrompt) {
+    if (isSessionActive) {
+        window.stopCommentarySession();
+    }
+    currentPersona = personaPrompt || "You are an intelligent real-time conversational AI voice assistant.";
+    const bridge = getBridge();
+    const apiKey = bridge ? bridge.getGeminiApiKey() : "";
+    let modelId = bridge ? bridge.getModelId() : "gemini-2.0-flash-exp";
+    if (!modelId || modelId.trim() === "" || !modelId.includes("gemini")) {
+        modelId = "gemini-2.0-flash-exp";
+    }
+    const voiceName = bridge ? bridge.getVoiceName() : "Puck";
+
+    if (!apiKey) {
+        if (bridge && bridge.onLiveError) {
+            bridge.onLiveError("Gemini API key is missing. Set your key in Settings.");
+        }
+        return;
+    }
+
+    const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+    try {
+        liveWs = new WebSocket(wsUrl);
+    } catch (e) {
+        if (bridge && bridge.onLiveError) bridge.onLiveError("WebSocket init failed: " + e.message);
+        return;
+    }
+
+    liveWs.onopen = function() {
+        const setupMessage = {
+            setup: {
+                model: "models/" + modelId,
+                generationConfig: {
+                    responseModalities: ["AUDIO"],
+                    speechConfig: {
+                        voiceConfig: {
+                            prebuiltVoiceConfig: {
+                                voiceName: voiceName || "Puck"
+                            }
+                        }
+                    }
+                },
+                systemInstruction: {
+                    parts: [{ text: currentPersona }]
+                },
+                tools: [
+                    {
+                        functionDeclarations: [
+                            {
+                                name: "locate_target",
+                                description: "Returns normalized bounding coordinates [ymin, xmin, ymax, xmax] for an identified visual target.",
+                                parameters: {
+                                    type: "OBJECT",
+                                    properties: {
+                                        targetId: { type: "STRING" },
+                                        box_2d: {
+                                            type: "ARRAY",
+                                            items: { type: "NUMBER" },
+                                            description: "[ymin, xmin, ymax, xmax] in normalized scale (0 to 1000)"
+                                        }
+                                    },
+                                    required: ["targetId", "box_2d"]
+                                }
+                            }
+                        ]
+                    }
+                ],
+                inputAudioTranscription: {},
+                outputAudioTranscription: {}
+            }
+        };
+        liveWs.send(JSON.stringify(setupMessage));
+        if (bridge && bridge.onLiveSessionConnected) {
+            bridge.onLiveSessionConnected();
+        }
+    };
+
+    liveWs.onmessage = async function(event) {
+        try {
+            let data = event.data;
+            let jsonText = (data instanceof Blob) ? await data.text() : data;
+            let payload = JSON.parse(jsonText);
+
+            if (payload.setupComplete) {
+                isSessionActive = true;
+                initMicrophoneCapture();
+                if (scriptText && scriptText.trim().length > 0) {
+                    sendTextMessage(scriptText);
+                }
+                return;
+            }
+
+            if (payload.error) {
+                if (bridge && bridge.onLiveError) {
+                    bridge.onLiveError(payload.error.message || JSON.stringify(payload.error));
+                }
+                window.stopCommentarySession();
+                return;
+            }
+
+            if (payload.serverContent) {
+                const content = payload.serverContent;
+                if (content.interrupted) {
+                    if (bridge && bridge.onLiveCommentaryText) {
+                        bridge.onLiveCommentaryText("⚡ [Interrupted]");
+                    }
+                }
+                if (content.modelTurn && content.modelTurn.parts) {
+                    for (const part of content.modelTurn.parts) {
+                        if (part.text && bridge && bridge.onLiveCommentaryText) {
+                            bridge.onLiveCommentaryText(part.text);
+                        }
+                        if (part.inlineData && part.inlineData.mimeType && part.inlineData.mimeType.startsWith("audio/")) {
+                            const base64Audio = part.inlineData.data;
+                            if (bridge && bridge.onLiveAudioChunkReceived) {
+                                bridge.onLiveAudioChunkReceived(base64Audio);
+                            }
+                            playAudioChunk(base64Audio);
+                        }
+                    }
+                }
+                if (content.turnComplete) {
+                    if (bridge && bridge.onLiveCommentaryFinished) {
+                        bridge.onLiveCommentaryFinished();
+                    }
+                }
+            }
+
+            if (payload.toolCall && payload.toolCall.functionCalls) {
+                for (const call of payload.toolCall.functionCalls) {
+                    if (call.name === "locate_target" && call.args) {
+                        const tId = call.args.targetId || "";
+                        const b = call.args.box_2d || [0, 0, 0, 0];
+                        if (bridge && bridge.onTargetCoordinatesReceived) {
+                            bridge.onTargetCoordinatesReceived(tId, b[1] || 0, b[0] || 0, b[3] || 0, b[2] || 0);
+                        }
+                        // Send function response back
+                        const resp = {
+                            toolResponse: {
+                                functionResponses: [
+                                    {
+                                        response: { output: { success: true } },
+                                        id: call.id
+                                    }
+                                ]
+                            }
+                        };
+                        liveWs.send(JSON.stringify(resp));
+                    }
+                }
+            }
+        } catch (e) {
+            console.error("Live ws message parse error:", e);
+        }
+    };
+
+    liveWs.onerror = function(err) {
+        if (bridge && bridge.onLiveError) bridge.onLiveError("WebSocket error occurred");
+    };
+
+    liveWs.onclose = function() {
+        isSessionActive = false;
+        if (bridge && bridge.onLiveCommentaryFinished) {
+            bridge.onLiveCommentaryFinished();
+        }
+    };
+};
+
+function sendTextMessage(text) {
+    if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+    const msg = {
+        clientContent: {
+            turns: [
+                {
+                    role: "user",
+                    parts: [{ text: text }]
+                }
+            ],
+            turnComplete: true
+        }
+    };
+    liveWs.send(JSON.stringify(msg));
+}
+
+window.groundTargetWithVision = function(base64Jpg, targetId, desc) {
+    if (!liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+    const cleanBase64 = base64Jpg.replace(/^data:image\/[a-z]+;base64,/, '');
+    const msg = {
+        realtimeInput: {
+            mediaChunks: [
+                {
+                    mimeType: "image/jpeg",
+                    data: cleanBase64
+                }
+            ]
+        }
+    };
+    liveWs.send(JSON.stringify(msg));
+    if (desc && desc.trim().length > 0) {
+        sendTextMessage(`Target ${targetId}: ${desc}`);
+    }
+};
+
+window.stopCommentarySession = function() {
+    isSessionActive = false;
+    if (micMediaStream) {
+        micMediaStream.getTracks().forEach(t => t.stop());
+        micMediaStream = null;
+    }
+    if (micScriptProcessor) {
+        try { micScriptProcessor.disconnect(); } catch(e) {}
+        micScriptProcessor = null;
+    }
+    if (audioContext) {
+        try { audioContext.close(); } catch(e) {}
+        audioContext = null;
+    }
+    if (liveWs) {
+        try { liveWs.close(); } catch(e) {}
+        liveWs = null;
+    }
+    const bridge = getBridge();
+    if (bridge && bridge.onLiveCommentaryFinished) {
+        bridge.onLiveCommentaryFinished();
+    }
+};
+
+function initMicrophoneCapture() {
+    navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } })
+        .then(stream => {
+            micMediaStream = stream;
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            const ctx = new AudioCtx({ sampleRate: 16000 });
+            const source = ctx.createMediaStreamSource(stream);
+            const processor = ctx.createScriptProcessor(4096, 1, 1);
+
+            processor.onaudioprocess = function(e) {
+                if (!isSessionActive || !liveWs || liveWs.readyState !== WebSocket.OPEN) return;
+                const inputData = e.inputBuffer.getChannelData(0);
+                const pcm16 = new Int16Array(inputData.length);
+                for (let i = 0; i < inputData.length; i++) {
+                    let s = Math.max(-1, Math.min(1, inputData[i]));
+                    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                const bytes = new Uint8Array(pcm16.buffer);
+                let binary = '';
+                for (let i = 0; i < bytes.byteLength; i++) {
+                    binary += String.fromCharCode(bytes[i]);
+                }
+                const base64Pcm = btoa(binary);
+
+                const realtimeInput = {
+                    realtimeInput: {
+                        mediaChunks: [
+                            {
+                                mimeType: "audio/pcm;rate=16000",
+                                data: base64Pcm
+                            }
+                        ]
+                    }
+                };
+                liveWs.send(JSON.stringify(realtimeInput));
+            };
+
+            source.connect(processor);
+            processor.connect(ctx.destination);
+            micScriptProcessor = processor;
+        })
+        .catch(err => {
+            console.error("Mic access error:", err);
+            const bridge = getBridge();
+            if (bridge && bridge.onLiveError) bridge.onLiveError("Mic permission required for Live Voice");
+        });
+}
+
+function playAudioChunk(base64Pcm) {
+    try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!audioContext) audioContext = new AudioCtx({ sampleRate: 24000 });
+        const binary = atob(base64Pcm);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const int16 = new Int16Array(bytes.buffer);
+        const float32 = new Float32Array(int16.length);
+        for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768.0;
+
+        const buffer = audioContext.createBuffer(1, float32.length, 24000);
+        buffer.copyToChannel(float32, 0);
+        const source = audioContext.createBufferSource();
+        source.buffer = buffer;
+        source.connect(audioContext.destination);
+        source.start();
+    } catch(e) {
+        console.error("Playback error:", e);
+    }
+}
+</script>
+</body>
+</html>
