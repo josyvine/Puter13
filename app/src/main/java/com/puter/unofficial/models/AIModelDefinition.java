@@ -2,6 +2,7 @@ package com.puter.unofficial.models;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class AIModelDefinition {
     private String id;
@@ -19,18 +20,18 @@ public class AIModelDefinition {
         this.id = id;
         this.displayName = displayName;
         this.provider = provider;
-        this.contextTokenLimit = contextTokenLimit;
+        this.contextTokenLimit = contextTokenLimit != null ? contextTokenLimit : "";
         this.supportsVision = supportsVision;
         this.supportsImageGen = supportsImageGen;
         this.isGeminiLive = isGeminiLive;
 
-        if (supportsVision) capabilityTags.add("vision");
-        if (supportsImageGen) capabilityTags.add("image_gen");
-        if (isGeminiLive) capabilityTags.add("live");
+        if (supportsVision) addCapabilityTag("vision");
+        if (supportsImageGen) addCapabilityTag("image_gen");
+        if (isGeminiLive) addCapabilityTag("live");
     }
 
     public String getId() {
-        return id;
+        return id != null ? id : "";
     }
 
     public void setId(String id) {
@@ -38,7 +39,10 @@ public class AIModelDefinition {
     }
 
     public String getDisplayName() {
-        return displayName;
+        if (displayName != null && !displayName.trim().isEmpty()) {
+            return displayName;
+        }
+        return getId();
     }
 
     public void setDisplayName(String displayName) {
@@ -46,7 +50,7 @@ public class AIModelDefinition {
     }
 
     public String getProvider() {
-        return provider;
+        return provider != null ? provider : "Other";
     }
 
     public void setProvider(String provider) {
@@ -54,11 +58,11 @@ public class AIModelDefinition {
     }
 
     public String getContextTokenLimit() {
-        return contextTokenLimit;
+        return contextTokenLimit != null ? contextTokenLimit : "";
     }
 
     public void setContextTokenLimit(String contextTokenLimit) {
-        this.contextTokenLimit = contextTokenLimit;
+        this.contextTokenLimit = contextTokenLimit != null ? contextTokenLimit : "";
     }
 
     public boolean isSupportsVision() {
@@ -67,6 +71,7 @@ public class AIModelDefinition {
 
     public void setSupportsVision(boolean supportsVision) {
         this.supportsVision = supportsVision;
+        if (supportsVision) addCapabilityTag("vision");
     }
 
     public boolean isSupportsImageGen() {
@@ -75,6 +80,7 @@ public class AIModelDefinition {
 
     public void setSupportsImageGen(boolean supportsImageGen) {
         this.supportsImageGen = supportsImageGen;
+        if (supportsImageGen) addCapabilityTag("image_gen");
     }
 
     public boolean isGeminiLive() {
@@ -83,6 +89,7 @@ public class AIModelDefinition {
 
     public void setGeminiLive(boolean geminiLive) {
         isGeminiLive = geminiLive;
+        if (geminiLive) addCapabilityTag("live");
     }
 
     public List<String> getCapabilityTags() {
@@ -90,14 +97,63 @@ public class AIModelDefinition {
     }
 
     public void setCapabilityTags(List<String> capabilityTags) {
-        this.capabilityTags = capabilityTags;
+        this.capabilityTags = capabilityTags != null ? capabilityTags : new ArrayList<>();
     }
 
     public List<String> getCategories() {
         return categories;
     }
 
+    /**
+     * Ingests capability categories and synchronizes feature flags and tags.
+     */
     public void setCategories(List<String> categories) {
-        this.categories = categories;
+        this.categories = categories != null ? categories : new ArrayList<>();
+        for (String cat : this.categories) {
+            String lower = cat.toLowerCase(Locale.US);
+            if (lower.contains("image") || lower.contains("imagen") || lower.contains("flux") || lower.contains("txt2img")) {
+                this.supportsImageGen = true;
+                addCapabilityTag("image_gen");
+            }
+            if (lower.contains("vision") || lower.contains("multimodal") || lower.contains("vl")) {
+                this.supportsVision = true;
+                addCapabilityTag("vision");
+            }
+            if (lower.contains("live") || lower.contains("native-audio")) {
+                this.isGeminiLive = true;
+                addCapabilityTag("live");
+            }
+            if (lower.contains("code") || lower.contains("coder")) {
+                addCapabilityTag("code");
+            }
+            if (lower.contains("reasoning") || lower.contains("thinking")) {
+                addCapabilityTag("reasoning");
+            }
+        }
+    }
+
+    public boolean hasCategory(String category) {
+        if (category == null || categories == null) return false;
+        for (String c : categories) {
+            if (c.equalsIgnoreCase(category)) return true;
+        }
+        return false;
+    }
+
+    public void addCategory(String category) {
+        if (category == null || category.trim().isEmpty()) return;
+        if (this.categories == null) this.categories = new ArrayList<>();
+        if (!hasCategory(category)) {
+            this.categories.add(category.trim().toLowerCase(Locale.US));
+        }
+    }
+
+    public void addCapabilityTag(String tag) {
+        if (tag == null || tag.trim().isEmpty()) return;
+        if (this.capabilityTags == null) this.capabilityTags = new ArrayList<>();
+        String clean = tag.trim().toLowerCase(Locale.US);
+        if (!this.capabilityTags.contains(clean)) {
+            this.capabilityTags.add(clean);
+        }
     }
 }
