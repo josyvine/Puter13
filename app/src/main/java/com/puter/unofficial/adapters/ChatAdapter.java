@@ -7,6 +7,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.util.Base64;
 import android.view.LayoutInflater;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
@@ -48,6 +49,10 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         void onPreviewCode(String language, String code);
         void onPreviewImage(String imageUrlOrBase64);
         void onLongPressMessage(ChatMessage message, View view);
+
+        default void onLongPressMessage(ChatMessage message, View view, float rawX, float rawY) {
+            onLongPressMessage(message, view);
+        }
     }
 
     private final List<ChatMessage> messages = new ArrayList<>();
@@ -137,23 +142,32 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
         ChatMessage message = messages.get(position);
         Context context = holder.itemView.getContext();
 
-        // 700ms long-press listener
-        holder.itemView.setOnLongClickListener(v -> {
-            if (actionListener != null) {
-                actionListener.onLongPressMessage(message, v);
-                return true;
-            }
-            return false;
-        });
-
-        // Horizontal swipe gesture (>55px) to quote and reattach
-        holder.itemView.setOnTouchListener(new OnSwipeTouchListener(context) {
+        // Coordinate-aware touch listener
+        OnSwipeTouchListener touchListener = new OnSwipeTouchListener(context) {
             @Override
             public void onSwipeLeft() {
                 if (actionListener != null) {
                     actionListener.onQuoteAndReattach(message);
                 }
             }
+        };
+        holder.itemView.setOnTouchListener(touchListener);
+
+        // Long-press with exact touch coordinates
+        holder.itemView.setOnLongClickListener(v -> {
+            if (actionListener != null) {
+                float rx = touchListener.getLastRawX();
+                float ry = touchListener.getLastRawY();
+                if (rx == 0 && ry == 0) {
+                    int[] loc = new int[2];
+                    v.getLocationOnScreen(loc);
+                    rx = loc[0] + (v.getWidth() / 2f);
+                    ry = loc[1] + (v.getHeight() / 2f);
+                }
+                actionListener.onLongPressMessage(message, v, rx, ry);
+                return true;
+            }
+            return false;
         });
 
         if (holder instanceof UserViewHolder) {
@@ -281,7 +295,10 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
             });
 
             aHolder.btnSpeak.setOnClickListener(v -> {
-                if (actionListener != null) actionListener.onSpeakAssistantClicked(message, aHolder.flSpeakAssistantContainer, aHolder.orbitStar1, aHolder.orbitStar2, aHolder.orbitStar3);
+                if (actionListener != null) {
+                    actionListener.onSpeakAssistantClicked(message, aHolder.flSpeakAssistantContainer,
+                            aHolder.orbitStar1, aHolder.orbitStar2, aHolder.orbitStar3);
+                }
             });
 
             aHolder.btnRegenerate.setOnClickListener(v -> {
@@ -383,25 +400,37 @@ public class ChatAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
     }
 
     /**
-     * Touch helper detecting horizontal right-to-left swipe (>55px)
+     * Touch helper detecting horizontal right-to-left swipe (>55px) and tracking raw touch coordinates.
      */
     public static class OnSwipeTouchListener implements View.OnTouchListener {
         private float downX;
         private float downY;
+        private float lastRawX;
+        private float lastRawY;
         private final float density;
 
         public OnSwipeTouchListener(Context context) {
             this.density = context.getResources().getDisplayMetrics().density;
         }
 
+        public float getLastRawX() {
+            return lastRawX;
+        }
+
+        public float getLastRawY() {
+            return lastRawY;
+        }
+
         @Override
-        public boolean onTouch(View v, android.view.MotionEvent event) {
+        public boolean onTouch(View v, MotionEvent event) {
             switch (event.getAction()) {
-                case android.view.MotionEvent.ACTION_DOWN:
+                case MotionEvent.ACTION_DOWN:
                     downX = event.getX();
                     downY = event.getY();
+                    lastRawX = event.getRawX();
+                    lastRawY = event.getRawY();
                     return false;
-                case android.view.MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_UP:
                     float upX = event.getX();
                     float upY = event.getY();
                     float deltaX = upX - downX;
