@@ -3,24 +3,22 @@ package com.puter.unofficial;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.net.Uri;
+import android.webkit.CookieManager;
 
 /**
  * Manages the persistent authentication state for Puter Unofficial.
- * This class ensures that once a user signs in via the browser, the app 
- * remembers that state across restarts using SharedPreferences.
+ * This class ensures that once a user signs in via the browser/popup, the app 
+ * remembers that state across restarts using SharedPreferences and CookieManager.
  * 
  * CORE ANALYSIS UPDATE: 
- * Following the identification of the "OAuth Interruption" bug, this class 
- * has been transitioned to a "Mirror State" architecture. It no longer 
- * dictates the session state; instead, it synchronizes with the Puter.js 
- * SDK to ensure the Native Android UI and Splash Screen are consistent 
- * with the real Web session.
+ * Synchronizes with Puter's redirect endpoints and Web OS desktop routing (/app)
+ * to ensure native Android UI transitions reliably between "Sign In" and "Sign Out".
  */
 public class AuthManager {
 
     private static final String PREF_NAME = "PuterPrefs";
     private static final String KEY_IS_LOGGED_IN = "is_logged_in";
-    private static final String KEY_AUTH_TOKEN = "puter_auth_token"; // Key for the extracted SDK token
+    private static final String KEY_AUTH_TOKEN = "puter_auth_token"; // Key for extracted SDK token
     private static AuthManager instance;
     private final SharedPreferences prefs;
 
@@ -48,9 +46,6 @@ public class AuthManager {
 
     /**
      * Saves the current authentication status.
-     * CORE FIX: This is now only called by the JavaScript SDK via the 
-     * onAuthStatusChanged bridge. This ensures Native state never 
-     * gets ahead of the REAL Puter session state.
      * 
      * @param status true if the user is authenticated, false otherwise.
      */
@@ -60,7 +55,7 @@ public class AuthManager {
 
     /**
      * Checks if the user is currently considered logged in.
-     * Used by SplashActivity and Fragments to determine the initial UI layout.
+     * Used by SplashActivity and MainActivity to determine initial UI state.
      * 
      * @return true if status is saved as logged in.
      */
@@ -89,20 +84,43 @@ public class AuthManager {
 
     /**
      * Handles redirect callback URLs, extracting and saving any token parameters
-     * before persisting the logged-in flag.
+     * before persisting the logged-in flag. Also inspects CookieManager for session tokens.
      * 
      * @param url The redirect URL intercepted from OAuth.
      */
     public void handleAuthCallback(String url) {
+        boolean tokenFound = false;
         if (url != null && url.contains("token=")) {
             try {
                 Uri uri = Uri.parse(url);
                 String token = uri.getQueryParameter("token");
                 if (token != null && !token.isEmpty()) {
                     setAuthToken(token);
+                    tokenFound = true;
                 }
             } catch (Exception ignored) {}
         }
+
+        // Secondary extraction from session cookies if URL query was tokenless
+        if (!tokenFound) {
+            try {
+                CookieManager cm = CookieManager.getInstance();
+                String cookies = cm.getCookie("https://puter.com");
+                if (cookies != null) {
+                    for (String cookie : cookies.split(";")) {
+                        String trimmed = cookie.trim();
+                        if (trimmed.startsWith("puter_auth=") || trimmed.startsWith("token=") || trimmed.startsWith("auth_token=")) {
+                            String[] parts = trimmed.split("=", 2);
+                            if (parts.length > 1 && !parts[1].isEmpty()) {
+                                setAuthToken(parts[1]);
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
         setLoggedIn(true);
     }
 
@@ -117,22 +135,25 @@ public class AuthManager {
 
     /**
      * Clears the authentication state.
-     * Triggered when the user selects "Sign Out" from the HTML dropdown menu.
-     * Ensures both the mirror flag and the backup token are removed.
+     * Triggered when the user selects "Sign Out".
+     * Ensures the login flag, backup token, and WebView cookies are wiped clean.
      */
     public void logout() {
         prefs.edit()
              .putBoolean(KEY_IS_LOGGED_IN, false)
-             .remove(KEY_AUTH_TOKEN) // Ensure token is cleared on logout
+             .remove(KEY_AUTH_TOKEN)
              .apply();
+
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            cm.removeAllCookies(null);
+            cm.flush();
+        } catch (Exception ignored) {}
     }
 
     /**
      * Helper to verify if a specific URL is a Puter authentication success callback.
-     * This logic is used by the WebViewClient and ChromeClient to detect when 
-     * the OAuth flow has reached its completion phase.
-     * 
-     * UPDATED: Aligned with the deep analysis to capture all redirect success markers.
+     * Intercepts standard token redirects and Web OS desktop routing (/app) upon login.
      * 
      * @param url The URL being intercepted in the WebView.
      * @return true if the URL indicates a successful authentication.
@@ -141,12 +162,16 @@ public class AuthManager {
         if (url == null) return false;
 
         /* 
-         * Puter typically redirects back to the main domain or a custom 
-         * callback URL after login. We check for all known success markers.
+         * Puter redirects back to the main domain, a callback parameter, or the 
+         * Web OS desktop dashboard (/app) once login completes successfully.
          */
         return (url.contains(AppConstants.AUTH_TOKEN_PARAM) || 
                 url.contains(AppConstants.AUTH_SUCCESS_MARKER) ||
                 url.contains("auth_success") ||
-                url.contains("signed_in=true"));
+                url.contains("signed_in=true") ||
+                url.contains("puter.com/app") ||
+                url.contains("/app/") ||
+                url.endsWith("/app") ||
+                url.contains("/app#"));
     }
 }
