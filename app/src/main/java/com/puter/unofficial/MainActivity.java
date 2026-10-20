@@ -175,6 +175,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean isLiveMode = false;
     private boolean isAutoMode = false;
     private boolean isGenerating = false;
+    private boolean isLiveVoiceConnected = false;
     private TextToSpeech textToSpeech;
     private SpeechRecognizer speechRecognizer;
     private Vibrator vibrator;
@@ -305,11 +306,11 @@ public class MainActivity extends AppCompatActivity {
         webAppInterface.setMainActivity(this);
         headlessAudioBridge = new HeadlessAudioBridge(this, headlessAudioWebView);
         webAppInterface.setAudioBridge(headlessAudioBridge);
-        
+
         WebSettings ws = headlessAudioWebView.getSettings();
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
-        ws.setMediaPlaybackRequiresUserGesture(false); // CRITICAL: Allows Web Audio API to play sound automatically
+        ws.setMediaPlaybackRequiresUserGesture(false); // Allows Web Audio API to play sound automatically
         headlessAudioWebView.addJavascriptInterface(webAppInterface, AppConstants.JS_BRIDGE_NAME);
 
         headlessAudioBridge.setEventListener(new HeadlessAudioBridge.LiveAudioEventListener() {
@@ -348,10 +349,11 @@ public class MainActivity extends AppCompatActivity {
         return activeModelId;
     }
 
-    // --- PUBLIC METHODS CALLED BY WebAppInterface ---
+    // --- PUBLIC METHODS CALLED BY WebAppInterface & BRIDGE ---
 
     public void onLiveSessionConnected() {
         runOnUiThread(() -> {
+            isLiveVoiceConnected = true;
             if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(R.string.voice_status_listening);
             toggleStarAnimation(true);
         });
@@ -365,16 +367,35 @@ public class MainActivity extends AppCompatActivity {
 
     public void onLiveSessionFinished() {
         runOnUiThread(() -> {
+            isLiveVoiceConnected = false;
             if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(R.string.voice_status_speaking);
             toggleStarAnimation(false);
+            addSystemMessage("🔴 Disconnected from Live Model");
         });
     }
 
     public void onLiveError(String err) {
         runOnUiThread(() -> {
+            isLiveVoiceConnected = false;
             if (tvLiveVoiceStatus != null) tvLiveVoiceStatus.setText(err);
             toggleStarAnimation(false);
+            addSystemMessage("🔴 Disconnected from Live Model");
         });
+    }
+
+    private void addSystemMessage(String text) {
+        ChatMessage sysMsg = new ChatMessage(
+                "msg_sys_" + System.currentTimeMillis(),
+                ChatMessage.ROLE_SYSTEM,
+                text,
+                System.currentTimeMillis()
+        );
+        chatAdapter.addMessage(sysMsg);
+        if (currentSession != null) {
+            currentSession.addMessage(sysMsg);
+            sessionManager.saveSession(currentSession);
+        }
+        rvChatTimeline.smoothScrollToPosition(Math.max(0, chatAdapter.getItemCount() - 1));
     }
 
     private void setupTTS() {
@@ -502,14 +523,11 @@ public class MainActivity extends AppCompatActivity {
         rvChatTimeline.setLayoutManager(lm);
         rvChatTimeline.setAdapter(chatAdapter);
 
-        // Empty canvas tap gesture detector
+        // Strict Long-Press gesture detector for empty chat canvas (NEVER triggers on single tap)
         GestureDetector gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onSingleTapUp(MotionEvent e) {
-                if (chatAdapter.getItemCount() == 0) {
-                    showEmptyCanvasContextMenu(e.getRawX(), e.getRawY());
-                    return true;
-                }
+                // Return false so single taps do NOT trigger the context menu
                 return false;
             }
 
@@ -766,10 +784,15 @@ public class MainActivity extends AppCompatActivity {
         tvMenuGlobalTokens.setText("Global Total: " + totalTokens + " tokens");
         tvMenuGlobalCost.setText(String.format(Locale.US, "Global Cost: $%.4f", totalCost));
 
-        // Clamped height matching compact dimensions of Puter11 popup
+        // Proportional height matching exact aspect of Puter11 index.html dropdown menu (~72vh clamped)
         DisplayMetrics dm = getResources().getDisplayMetrics();
+        int calculatedHeight = (int) (dm.heightPixels * 0.72f);
+        int minH = (int) (380 * dm.density);
+        int maxH = (int) (580 * dm.density);
+        int finalH = Math.max(minH, Math.min(calculatedHeight, maxH));
+
         ViewGroup.LayoutParams lp = puterDropdownMenuCard.getLayoutParams();
-        lp.height = (int) (dm.heightPixels * 0.48f);
+        lp.height = finalH;
         puterDropdownMenuCard.setLayoutParams(lp);
 
         refreshDynamicSessionsInMenu();
@@ -1577,6 +1600,18 @@ public class MainActivity extends AppCompatActivity {
     // --- LIVE VOICE AGENT ---
 
     private void launchLiveVoiceAgent() {
+        if (isLiveVoiceConnected) {
+            // Disconnect if already active
+            if (headlessAudioBridge != null) {
+                headlessAudioBridge.stopCommentarySession();
+            }
+            isLiveVoiceConnected = false;
+            toggleStarAnimation(false);
+            addSystemMessage("🔴 Disconnected from Live Model");
+            Toast.makeText(this, "Disconnected from Live Model", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
         String apiKey = prefs.getString(AppConstants.KEY_GEMINI_API_KEY, "");
         if (apiKey.trim().isEmpty()) {
             new AlertDialog.Builder(this)
@@ -1588,7 +1623,31 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        // Auto-switch provider to Gemini and active model to Gemini Live (Parity with Puter11)
+        activeProvider = "Gemini";
+        prefs.edit().putString(AppConstants.KEY_ACTIVE_PROVIDER, activeProvider).apply();
+
+        String targetLiveModel = "models/gemini-2.5-flash-preview-tts";
+        for (AIModelDefinition m : allModelsList) {
+            String mid = m.getId().toLowerCase(Locale.US);
+            if (mid.contains("live") || mid.contains("tts") || mid.contains("flash-preview")) {
+                targetLiveModel = m.getId();
+                break;
+            }
+        }
+        activeModelId = targetLiveModel;
+        selectedModelText.setText(activeModelId);
+        if (currentSession != null) {
+            currentSession.setSelectedModelId(activeModelId);
+            sessionManager.saveSession(currentSession);
+        }
+
+        Toast.makeText(this, "Switched active provider model to Gemini Live Preview", Toast.LENGTH_SHORT).show();
+        addSystemMessage("🟢 Connected to Gemini Live Model");
+
+        isLiveVoiceConnected = true;
         toggleStarAnimation(true);
+
         if (headlessAudioBridge != null) {
             headlessAudioBridge.startCommentarySession("auto", activeModelId);
         }
@@ -1719,12 +1778,12 @@ public class MainActivity extends AppCompatActivity {
     private void showGeminiSettingsDialog() {
         BottomSheetDialog dialog = new BottomSheetDialog(this, R.style.BottomSheetDialogTheme);
         View sheet = LayoutInflater.from(this).inflate(R.layout.dialog_gemini_settings, null);
-        
+
         EditText etKey = sheet.findViewById(R.id.etGeminiApiKey);
         TextView tvStatus = sheet.findViewById(R.id.tvGeminiFetchStatus);
         TextView tvGrounding = sheet.findViewById(R.id.tvGroundingMode);
         TextView tvVoice = sheet.findViewById(R.id.tvVoiceCharacter);
-        
+
         etKey.setText(prefs.getString(AppConstants.KEY_GEMINI_API_KEY, ""));
 
         // Grounding Mode Selector
@@ -1945,7 +2004,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Displays the 4-item context menu on an empty canvas or when tapping outside message turns.
+     * Displays the 4-item context menu on an empty canvas or empty chat bubble ONLY on long touch.
      */
     public void showEmptyCanvasContextMenu(float rawX, float rawY) {
         contextTargetMessage = null;
@@ -2035,9 +2094,10 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 AuthManager auth = AuthManager.getInstance(MainActivity.this);
-                if (auth.isAuthCallback(url)) {
+                if (auth.isAuthCallback(url) || (url != null && (url.contains("/app") || url.contains("signed_in=true")))) {
                     extractAndSaveTokenIfPresent(url);
                     auth.setLoggedIn(true);
+                    CookieManager.getInstance().flush();
                     refreshDropdownUI();
                     Toast.makeText(MainActivity.this, "Puter Sign-In Successful!", Toast.LENGTH_SHORT).show();
                     dialog.dismiss();
@@ -2051,7 +2111,7 @@ public class MainActivity extends AppCompatActivity {
                 super.onPageFinished(view, url);
                 CookieManager.getInstance().flush();
                 AuthManager auth = AuthManager.getInstance(MainActivity.this);
-                if (url != null && auth.isAuthCallback(url)) {
+                if (url != null && (auth.isAuthCallback(url) || url.contains("/app") || url.contains("signed_in=true"))) {
                     extractAndSaveTokenIfPresent(url);
                     auth.setLoggedIn(true);
                     refreshDropdownUI();
@@ -2235,3 +2295,4 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 }
+
