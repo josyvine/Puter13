@@ -104,18 +104,22 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 3. Chat Timeline RecyclerView -->
+        <!-- 3. Chat Timeline RecyclerView (Ghost fast-scroll lines suppressed) -->
         <androidx.recyclerview.widget.RecyclerView
             android:id="@+id/rvChatTimeline"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:layout_above="@id/chatControlsContainer"
             android:layout_below="@id/settingsBar"
+            android:background="#f7f7f7"
             android:clipToPadding="false"
+            android:fastScrollEnabled="false"
+            android:overScrollMode="never"
             android:paddingStart="12dp"
             android:paddingTop="12dp"
             android:paddingEnd="12dp"
-            android:paddingBottom="16dp" />
+            android:paddingBottom="16dp"
+            android:scrollbars="none" />
 
         <!-- 4. ECG Generation Pulse Loader with Stop Button -->
         <LinearLayout
@@ -178,7 +182,7 @@
             android:paddingEnd="10dp"
             android:paddingBottom="10dp">
 
-            <!-- Floating Pill Search Bar Container (Max 600dp) -->
+            <!-- Floating Pill Search Bar Container -->
             <LinearLayout
                 android:id="@+id/puterSearchBarContainer"
                 android:layout_width="match_parent"
@@ -206,7 +210,7 @@
                     android:layout_height="wrap_content"
                     android:minHeight="44dp">
 
-                    <!-- Plus Attachment Button (Anchored Left 6dp) -->
+                    <!-- Plus Attachment Button -->
                     <ImageView
                         android:id="@+id/btnUpload"
                         android:layout_width="38dp"
@@ -306,7 +310,7 @@
                                 android:visibility="invisible" />
                         </FrameLayout>
 
-                        <!-- Send Button (Circle #1a73e8, replaces mic/voice when typing) -->
+                        <!-- Send Button -->
                         <ImageButton
                             android:id="@+id/btnSend"
                             android:layout_width="38dp"
@@ -325,7 +329,7 @@
             </LinearLayout>
         </LinearLayout>
 
-        <!-- 6. Floating Expandable Model Accordion Menu (Below Settings Bar) -->
+        <!-- 6. Floating Expandable Model Accordion Menu -->
         <androidx.cardview.widget.CardView
             android:id="@+id/accordionMenuCard"
             android:layout_width="match_parent"
@@ -342,13 +346,15 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:background="#ffffff"
-                android:maxHeight="380dp" />
+                android:clipToPadding="false"
+                android:overScrollMode="never"
+                android:paddingBottom="8dp" />
         </androidx.cardview.widget.CardView>
 
-        <!-- 7. Floating Scrollable Three-Dot Dropdown Menu (Top-Right) -->
+        <!-- 7. Floating Scrollable Three-Dot Dropdown Menu (Proportional Height & Smooth Scrolling) -->
         <androidx.cardview.widget.CardView
             android:id="@+id/puterDropdownMenuCard"
-            android:layout_width="260dp"
+            android:layout_width="280dp"
             android:layout_height="wrap_content"
             android:layout_alignParentEnd="true"
             android:layout_marginTop="62dp"
@@ -359,10 +365,12 @@
 
             <ScrollView
                 android:layout_width="match_parent"
-                android:layout_height="400dp"
+                android:layout_height="wrap_content"
                 android:background="#ffffff"
-                android:maxHeight="480dp"
-                android:overScrollMode="never">
+                android:fadeScrollbars="false"
+                android:fillViewport="true"
+                android:overScrollMode="ifContentScrolls"
+                android:scrollbars="vertical">
 
                 <LinearLayout
                     android:id="@+id/llDropdownMenuContent"
@@ -572,14 +580,17 @@
             </ScrollView>
         </androidx.cardview.widget.CardView>
 
-        <!-- 8. Floating Context Menu (Touched Location) -->
+        <!-- 8. Floating Context Menu (Anchored to Top-Left for Dynamic setX/setY Touch Coordinates) -->
         <androidx.cardview.widget.CardView
             android:id="@+id/customContextMenuCard"
-            android:layout_width="190dp"
+            android:layout_width="200dp"
             android:layout_height="wrap_content"
+            android:layout_alignParentStart="true"
+            android:layout_alignParentTop="true"
             android:elevation="16dp"
             android:visibility="gone"
-            app:cardCornerRadius="12dp">
+            app:cardCornerRadius="12dp"
+            app:cardElevation="16dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -640,7 +651,6 @@
             android:layout_width="1dp"
             android:layout_height="1dp"
             android:visibility="invisible" />
-
 
     </RelativeLayout>
 </androidx.coordinatorlayout.widget.CoordinatorLayout>
