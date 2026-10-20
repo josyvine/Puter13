@@ -122,7 +122,7 @@
                 android:src="@drawable/ic_copy"
                 app:tint="@color/text_muted" />
 
-            <!-- Speak (TTS) with Orbiting Stars -->
+            <!-- Speak (TTS) with Orbiting Stars (Positioned on Circular Perimeter) -->
             <FrameLayout
                 android:id="@+id/flSpeakAssistantContainer"
                 android:layout_width="40dp"
@@ -140,31 +140,39 @@
                     android:src="@drawable/ic_speaker"
                     app:tint="@color/text_muted" />
 
+                <!-- Star 1 (Top Center: 12 o'clock) -->
                 <TextView
                     android:id="@+id/orbitStar1"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center"
+                    android:layout_gravity="top|center_horizontal"
+                    android:layout_marginTop="2dp"
                     android:text="✦"
                     android:textColor="#1a73e8"
                     android:textSize="11sp"
                     android:visibility="invisible" />
 
+                <!-- Star 2 (Bottom Right: 4 o'clock) -->
                 <TextView
                     android:id="@+id/orbitStar2"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center"
+                    android:layout_gravity="bottom|end"
+                    android:layout_marginEnd="3dp"
+                    android:layout_marginBottom="4dp"
                     android:text="✦"
                     android:textColor="#1a73e8"
                     android:textSize="10sp"
                     android:visibility="invisible" />
 
+                <!-- Star 3 (Bottom Left: 8 o'clock) -->
                 <TextView
                     android:id="@+id/orbitStar3"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:layout_gravity="center"
+                    android:layout_gravity="bottom|start"
+                    android:layout_marginStart="3dp"
+                    android:layout_marginBottom="4dp"
                     android:text="✦"
                     android:textColor="#1a73e8"
                     android:textSize="9sp"
