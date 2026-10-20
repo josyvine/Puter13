@@ -37,7 +37,6 @@ import android.view.animation.AnimationUtils;
 import android.webkit.CookieManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.widget.ArrayAdapter;
 import android.widget.CheckBox;
 import android.widget.EditText;
@@ -86,7 +85,7 @@ import java.util.Map;
 
 /**
  * 100% Pure Native Android Java Activity for Puter Unofficial.
- * Fully synchronized with the logic, JSON datasets, menus, and interaction models of Puter11.
+ * Uses genuine Puter.js SDK puter.auth.signIn() via MyWebChromeClient.onCreateWindow.
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -245,11 +244,9 @@ public class MainActivity extends AppCompatActivity {
         orbitStar3 = findViewById(R.id.orbitStar3);
         btnSendMessage = findViewById(R.id.btnSend);
 
-        // Accordion Card
         accordionMenuCard = findViewById(R.id.accordionMenuCard);
         rvAccordionModels = findViewById(R.id.rvAccordionModels);
 
-        // Dropdown Menu Card
         puterDropdownMenuCard = findViewById(R.id.puterDropdownMenuCard);
         menuAuthOption = findViewById(R.id.menuAuthOption);
         menuModelSourceToggle = findViewById(R.id.menuModelSourceToggle);
@@ -269,7 +266,6 @@ public class MainActivity extends AppCompatActivity {
         llDynamicSessionsContainer = findViewById(R.id.llDynamicSessionsContainer);
         llDynamicScrapedContainer = findViewById(R.id.llDynamicScrapedContainer);
 
-        // Context Menu Card
         customContextMenuCard = findViewById(R.id.customContextMenuCard);
         ctxCancelGen = findViewById(R.id.ctxCancelGen);
         ctxCopyChat = findViewById(R.id.ctxCopyChat);
@@ -280,7 +276,6 @@ public class MainActivity extends AppCompatActivity {
         ctxToggleProvider = findViewById(R.id.ctxToggleProvider);
         ctxEndSession = findViewById(R.id.ctxEndSession);
 
-        // Headless WebView
         headlessAudioWebView = findViewById(R.id.headlessAudioWebView);
 
         setupAspectRatioSpinner();
@@ -300,6 +295,7 @@ public class MainActivity extends AppCompatActivity {
         spnAspectRatio.setAdapter(adapter);
     }
 
+    @SuppressLint("SetJavaScriptEnabled")
     private void setupHeadlessAudioWebView() {
         if (headlessAudioWebView == null) return;
         webAppInterface = new WebAppInterface(this);
@@ -310,7 +306,24 @@ public class MainActivity extends AppCompatActivity {
         WebSettings ws = headlessAudioWebView.getSettings();
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
+        ws.setDatabaseEnabled(true);
+        ws.setJavaScriptCanOpenWindowsAutomatically(true);
+        ws.setSupportMultipleWindows(true);
         ws.setMediaPlaybackRequiresUserGesture(false);
+
+        // Strip '; wv' to operate in standard browser origin mode
+        String userAgent = ws.getUserAgentString().replace("; wv", "");
+        ws.setUserAgentString(userAgent);
+
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(headlessAudioWebView, true);
+
+        // Attach PuterWebViewClient for https://appassets.androidplatform.net virtual origin
+        headlessAudioWebView.setWebViewClient(new PuterWebViewClient(this));
+
+        // Attach MyWebChromeClient to handle Puter SDK puter.auth.signIn() window.open() popups
+        headlessAudioWebView.setWebChromeClient(new MyWebChromeClient(this));
+
         headlessAudioWebView.addJavascriptInterface(webAppInterface, AppConstants.JS_BRIDGE_NAME);
 
         headlessAudioBridge.setEventListener(new HeadlessAudioBridge.LiveAudioEventListener() {
@@ -342,7 +355,9 @@ public class MainActivity extends AppCompatActivity {
                 onLiveError(errorMessage);
             }
         });
-        headlessAudioWebView.loadUrl(AppConstants.HEADLESS_AUDIO_URL);
+
+        // Load through virtual HTTPS domain appassets.androidplatform.net for SDK compatibility
+        headlessAudioWebView.loadUrl("https://appassets.androidplatform.net/assets/headless_live_audio.html");
     }
 
     public String getActiveModelId() {
@@ -531,7 +546,6 @@ public class MainActivity extends AppCompatActivity {
         rvChatTimeline.setLayoutManager(lm);
         rvChatTimeline.setAdapter(chatAdapter);
 
-        // Strict Long-Press gesture detector for empty chat canvas (NEVER triggers on single tap)
         GestureDetector gestureDetector = new GestureDetector(this, new GestureDetector.SimpleOnGestureListener() {
             @Override
             public boolean onSingleTapUp(MotionEvent e) {
@@ -882,7 +896,6 @@ public class MainActivity extends AppCompatActivity {
         rvStagedAttachments.setVisibility(View.GONE);
         updateSendButtonState();
 
-        // User message
         ChatMessage userMsg = new ChatMessage(
                 "msg_user_" + System.currentTimeMillis(),
                 ChatMessage.ROLE_USER,
@@ -895,7 +908,6 @@ public class MainActivity extends AppCompatActivity {
         sessionManager.autoUpdateTitleIfNeeded(currentSession, prompt);
         rvChatTimeline.smoothScrollToPosition(chatAdapter.getItemCount() - 1);
 
-        // Pending bot message
         ChatMessage assistantMsg = new ChatMessage(
                 "msg_bot_" + System.currentTimeMillis(),
                 ChatMessage.ROLE_BOT,
@@ -907,7 +919,6 @@ public class MainActivity extends AppCompatActivity {
         chatAdapter.addMessage(assistantMsg);
         currentSession.addMessage(assistantMsg);
 
-        // Check Reply Language directive
         String targetLang = prefs.getString(AppConstants.KEY_TARGET_LANGUAGE, "");
         String activeSystemMessage = prefs.getString(AppConstants.KEY_CUSTOM_INSTRUCTION, "");
         if (!targetLang.isEmpty()) {
@@ -916,7 +927,6 @@ public class MainActivity extends AppCompatActivity {
         }
         currentSession.getConfig().setSystemInstructions(activeSystemMessage);
 
-        // Aspect ratio handling for Image Models
         boolean isImageGen = PuterChatManager.isImageModel(activeModelId);
         String ratio = "1:1";
         if (spnAspectRatio != null && spnAspectRatio.getSelectedItem() != null) {
@@ -1538,7 +1548,6 @@ public class MainActivity extends AppCompatActivity {
 
         List<ModelAccordionAdapter.AccordionItem> items = new ArrayList<>();
 
-        // Section 1: All Models
         List<AIModelDefinition> sortedAll = new ArrayList<>(allModelsList);
         Collections.sort(sortedAll, (a, b) -> a.getDisplayName().compareToIgnoreCase(b.getDisplayName()));
         items.add(ModelAccordionAdapter.AccordionItem.createHeader("★ All Models", sortedAll.size()));
@@ -1546,7 +1555,6 @@ public class MainActivity extends AppCompatActivity {
             items.add(ModelAccordionAdapter.AccordionItem.createChild(m, "★ All Models"));
         }
 
-        // Section 2: By Parent / Provider
         for (Map.Entry<String, List<AIModelDefinition>> entry : modelsByProvider.entrySet()) {
             String pName = "Parent: " + entry.getKey();
             items.add(ModelAccordionAdapter.AccordionItem.createHeader(pName, entry.getValue().size()));
@@ -1555,7 +1563,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
-        // Section 3: By Category
         Map<String, List<AIModelDefinition>> byCategory = new HashMap<>();
         for (AIModelDefinition m : allModelsList) {
             List<String> cats = m.getCategories();
@@ -1629,7 +1636,6 @@ public class MainActivity extends AppCompatActivity {
         activeProvider = "Gemini";
         prefs.edit().putString(AppConstants.KEY_ACTIVE_PROVIDER, activeProvider).apply();
 
-        // Bind strictly to the supported Live models from your configuration (defaulting to Gemini 3.1 Flash Live Preview)
         String targetLiveModel = "Gemini 3.1 Flash Live Preview";
         if (activeModelId.toLowerCase(Locale.US).contains("native-audio") ||
             activeModelId.equalsIgnoreCase("Gemini 2.5 Flash Native Audio Preview")) {
@@ -1654,7 +1660,6 @@ public class MainActivity extends AppCompatActivity {
 
         Toast.makeText(this, "Switched active provider model to Gemini Live Preview", Toast.LENGTH_SHORT).show();
 
-        // Connect headless audio engine (System message is posted inside onLiveSessionConnected upon true handshake)
         if (headlessAudioBridge != null) {
             headlessAudioBridge.startCommentarySession("auto", activeModelId);
         }
@@ -2057,7 +2062,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // --- UTILITIES ---
+    // --- PUTER SDK AUTHENTICATION MIRROR ---
 
     private void toggleAuthMirror() {
         boolean loggedIn = AuthManager.getInstance(this).isLoggedIn();
@@ -2065,78 +2070,21 @@ public class MainActivity extends AppCompatActivity {
             AuthManager.getInstance(this).logout();
             refreshDropdownUI();
             Toast.makeText(this, "Signed Out", Toast.LENGTH_SHORT).show();
+            if (headlessAudioWebView != null) {
+                headlessAudioWebView.evaluateJavascript("if (typeof puter !== 'undefined' && puter.auth) { puter.auth.signOut(); }", null);
+            }
         } else {
-            showAuthPopupDialog();
+            // Trigger authentic Puter SDK Sign-In matching the old app
+            if (headlessAudioWebView != null) {
+                headlessAudioWebView.evaluateJavascript(
+                        "if (typeof puter !== 'undefined' && puter.auth) { " +
+                        "    puter.auth.signIn(); " +
+                        "} else { " +
+                        "    console.warn('Puter SDK initializing...'); " +
+                        "}", null
+                );
+            }
         }
-    }
-
-    private void showAuthPopupDialog() {
-        Dialog dialog = new Dialog(this, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
-        dialog.setContentView(R.layout.dialog_auth_popup);
-        WebView wv = dialog.findViewById(R.id.wvAuthPopup);
-        WebSettings ws = wv.getSettings();
-        ws.setJavaScriptEnabled(true);
-        ws.setDomStorageEnabled(true);
-        ws.setDatabaseEnabled(true);
-        CookieManager.getInstance().setAcceptCookie(true);
-        CookieManager.getInstance().setAcceptThirdPartyCookies(wv, true);
-
-        // Strip '; wv' to ensure Puter SDK and Google OAuth operate in standard browser mode
-        String ua = ws.getUserAgentString();
-        ws.setUserAgentString(ua.replace("; wv", ""));
-
-        wv.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                AuthManager auth = AuthManager.getInstance(MainActivity.this);
-                if (auth.isAuthCallback(url) || (url != null && (url.contains("/app") || url.contains("signed_in=true")))) {
-                    auth.handleAuthCallback(url);
-                    auth.setLoggedIn(true);
-                    CookieManager.getInstance().flush();
-                    refreshDropdownUI();
-                    Toast.makeText(MainActivity.this, "Puter Sign-In Successful!", Toast.LENGTH_SHORT).show();
-                    dialog.dismiss();
-                    return true;
-                }
-                return false;
-            }
-
-            @Override
-            public void onPageFinished(WebView view, String url) {
-                super.onPageFinished(view, url);
-                CookieManager.getInstance().flush();
-                AuthManager auth = AuthManager.getInstance(MainActivity.this);
-                if (url != null && (auth.isAuthCallback(url) || url.contains("/app") || url.contains("signed_in=true"))) {
-                    auth.handleAuthCallback(url);
-                    auth.setLoggedIn(true);
-                    refreshDropdownUI();
-                    dialog.dismiss();
-                }
-            }
-        });
-
-        dialog.findViewById(R.id.btnAuthCloseBar).setOnClickListener(v -> {
-            CookieManager.getInstance().flush();
-            refreshDropdownUI();
-            dialog.dismiss();
-        });
-
-        // Load Puter SDK embedded OAuth endpoint matching the old app exactly
-        String sdkAuthUrl = "https://puter.com/login?embedded=1&origin=https://appassets.androidplatform.net";
-        wv.loadUrl(sdkAuthUrl);
-        dialog.show();
-    }
-
-    private void extractAndSaveTokenIfPresent(String url) {
-        try {
-            if (url != null && url.contains("token=")) {
-                Uri uri = Uri.parse(url);
-                String token = uri.getQueryParameter("token");
-                if (token != null && !token.isEmpty()) {
-                    AuthManager.getInstance(this).setAuthToken(token);
-                }
-            }
-        } catch (Exception ignored) {}
     }
 
     private void toggleModelSource() {
@@ -2219,9 +2167,11 @@ public class MainActivity extends AppCompatActivity {
 
     public void handleUrlChange(String url) {
         Log.d(TAG, "handleUrlChange: " + url);
+        runOnUiThread(this::refreshDropdownUI);
     }
 
     public void reloadWebView() {
+        runOnUiThread(this::refreshDropdownUI);
         if (headlessAudioWebView != null) {
             headlessAudioWebView.reload();
         }
@@ -2290,4 +2240,3 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 }
-
