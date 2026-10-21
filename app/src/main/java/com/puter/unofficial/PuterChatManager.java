@@ -3,7 +3,6 @@ package com.puter.unofficial;
 import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
-import android.util.Log;
 import android.webkit.CookieManager;
 
 import com.puter.unofficial.models.ChatMessage;
@@ -16,6 +15,7 @@ import org.json.JSONObject;
 import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.TimeUnit;
 
 import okhttp3.Call;
