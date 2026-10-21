@@ -11,8 +11,8 @@ import android.webkit.CookieManager;
  * remembers that state across restarts using SharedPreferences and CookieManager.
  * 
  * CORE ANALYSIS UPDATE: 
- * Synchronizes with Puter's redirect endpoints and Web OS desktop routing (/app)
- * to ensure native Android UI transitions reliably between "Sign In" and "Sign Out".
+ * Synchronizes with Puter's redirect endpoints, multi-domain cookies (puter.com and api.puter.com),
+ * and localStorage extractions to ensure native Android components always have a valid Bearer token.
  */
 public class AuthManager {
 
@@ -55,22 +55,46 @@ public class AuthManager {
 
     /**
      * Checks if the user is currently considered logged in.
-     * Used by SplashActivity and MainActivity to determine initial UI state.
+     * Returns true if status is saved as logged in or a valid auth token is present.
      * 
-     * @return true if status is saved as logged in.
+     * @return true if authenticated.
      */
     public boolean isLoggedIn() {
-        return prefs.getBoolean(KEY_IS_LOGGED_IN, false);
+        boolean flag = prefs.getBoolean(KEY_IS_LOGGED_IN, false);
+        if (flag) return true;
+        String token = getAuthToken();
+        return token != null && !token.trim().isEmpty();
     }
 
     /**
-     * Persists the authentication token string extracted from the login popup.
-     * Used as a secondary backup to the browser's native cookie storage.
+     * Persists the authentication token string.
+     * Automatically strips quotes, removes redundant "Bearer " prefixes, and trims whitespace.
      * 
-     * @param token The session token string.
+     * @param token The raw or wrapped session token string.
      */
     public void setAuthToken(String token) {
-        prefs.edit().putString(KEY_AUTH_TOKEN, token).apply();
+        if (token == null) {
+            prefs.edit().remove(KEY_AUTH_TOKEN).apply();
+            return;
+        }
+
+        String cleaned = token.trim();
+        // Remove surrounding quotes if extracted directly from JSON or JS stringify
+        if (cleaned.startsWith("\"") && cleaned.endsWith("\"") && cleaned.length() >= 2) {
+            cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+        }
+        if (cleaned.startsWith("'") && cleaned.endsWith("'") && cleaned.length() >= 2) {
+            cleaned = cleaned.substring(1, cleaned.length() - 1).trim();
+        }
+        // Remove redundant "Bearer " prefix if already included
+        if (cleaned.toLowerCase().startsWith("bearer ")) {
+            cleaned = cleaned.substring(7).trim();
+        }
+
+        if (!cleaned.isEmpty()) {
+            prefs.edit().putString(KEY_AUTH_TOKEN, cleaned).apply();
+            setLoggedIn(true);
+        }
     }
 
     /**
@@ -80,6 +104,35 @@ public class AuthManager {
      */
     public void saveAuthToken(String token) {
         setAuthToken(token);
+    }
+
+    /**
+     * Synchronizes authentication token by inspecting cookies across Puter domains.
+     * 
+     * @return true if a token was successfully recovered from cookies.
+     */
+    public boolean syncTokenFromCookies() {
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            String[] domains = new String[]{"https://puter.com", "https://api.puter.com", "https://appassets.androidplatform.net"};
+            for (String domain : domains) {
+                String cookies = cm.getCookie(domain);
+                if (cookies != null && !cookies.isEmpty()) {
+                    for (String cookie : cookies.split(";")) {
+                        String trimmed = cookie.trim();
+                        if (trimmed.startsWith("puter_auth=") || trimmed.startsWith("token=") || 
+                            trimmed.startsWith("auth_token=") || trimmed.startsWith("session=")) {
+                            String[] parts = trimmed.split("=", 2);
+                            if (parts.length > 1 && !parts[1].trim().isEmpty()) {
+                                setAuthToken(parts[1]);
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+        return false;
     }
 
     /**
@@ -101,24 +154,9 @@ public class AuthManager {
             } catch (Exception ignored) {}
         }
 
-        // Secondary extraction from session cookies if URL query was tokenless
+        // Secondary extraction from session cookies across Puter domains if URL query was tokenless
         if (!tokenFound) {
-            try {
-                CookieManager cm = CookieManager.getInstance();
-                String cookies = cm.getCookie("https://puter.com");
-                if (cookies != null) {
-                    for (String cookie : cookies.split(";")) {
-                        String trimmed = cookie.trim();
-                        if (trimmed.startsWith("puter_auth=") || trimmed.startsWith("token=") || trimmed.startsWith("auth_token=")) {
-                            String[] parts = trimmed.split("=", 2);
-                            if (parts.length > 1 && !parts[1].isEmpty()) {
-                                setAuthToken(parts[1]);
-                                break;
-                            }
-                        }
-                    }
-                }
-            } catch (Exception ignored) {}
+            syncTokenFromCookies();
         }
 
         setLoggedIn(true);
@@ -126,11 +164,17 @@ public class AuthManager {
 
     /**
      * Retrieves the saved authentication token.
+     * If null, attempts a last-resort sync from CookieManager.
      * 
      * @return The saved token string or null if not available.
      */
     public String getAuthToken() {
-        return prefs.getString(KEY_AUTH_TOKEN, null);
+        String token = prefs.getString(KEY_AUTH_TOKEN, null);
+        if (token == null || token.trim().isEmpty()) {
+            syncTokenFromCookies();
+            token = prefs.getString(KEY_AUTH_TOKEN, null);
+        }
+        return (token != null && !token.trim().isEmpty()) ? token.trim() : null;
     }
 
     /**
