@@ -22,7 +22,8 @@ import java.io.OutputStream;
 /**
  * JavaScript interface bridge bound to headless_live_audio.html.
  * Handles Gemini Live Bidi WebSockets, Puter SDK authentication synchronization,
- * live audio streams, transcripts, and vision tool events.
+ * live audio streams, transcripts, vision tool events, and official Puter.js
+ * client-side chat streaming and model listing.
  */
 public class WebAppInterface {
 
@@ -116,6 +117,60 @@ public class WebAppInterface {
         AuthManager.getInstance(context).logout();
         if (mainActivity != null) {
             mainActivity.runOnUiThread(() -> mainActivity.reloadWebView());
+        }
+    }
+
+    // --- PUTER.JS CLIENT-SIDE SDK BRIDGE RECEIVERS ---
+
+    @JavascriptInterface
+    public void onPuterStreamChunk(String chunk) {
+        if (audioBridge != null) {
+            audioBridge.dispatchPuterChunk(chunk);
+        }
+        if (mainActivity != null) {
+            mainActivity.runOnUiThread(() -> mainActivity.onPuterChunkReceived(chunk));
+        }
+    }
+
+    @JavascriptInterface
+    public void onPuterStreamComplete(String fullResponse) {
+        if (audioBridge != null) {
+            audioBridge.dispatchPuterComplete(fullResponse);
+        }
+        if (mainActivity != null) {
+            mainActivity.runOnUiThread(() -> mainActivity.onPuterGenerationComplete(fullResponse));
+        }
+    }
+
+    @JavascriptInterface
+    public void onPuterImageResult(String imageUrl) {
+        if (audioBridge != null) {
+            audioBridge.dispatchPuterImage(imageUrl);
+        }
+        if (mainActivity != null) {
+            mainActivity.runOnUiThread(() -> mainActivity.onPuterImageReceived(imageUrl));
+        }
+    }
+
+    @JavascriptInterface
+    public void onPuterLiveModelsResult(String modelsJson) {
+        Log.d(TAG, "Puter live models payload received via SDK bridge");
+        if (audioBridge != null) {
+            audioBridge.dispatchPuterModels(modelsJson);
+        }
+        if (mainActivity != null) {
+            mainActivity.runOnUiThread(() -> mainActivity.onPuterLiveModelsReceived(modelsJson));
+        }
+    }
+
+    @JavascriptInterface
+    public void onPuterError(String errorMessage) {
+        Log.e(TAG, "Puter SDK error via bridge: " + errorMessage);
+        if (audioBridge != null) {
+            audioBridge.dispatchPuterError(errorMessage);
+        }
+        if (mainActivity != null) {
+            mainActivity.runOnUiThread(() -> mainActivity.onPuterGenerationError(errorMessage));
         }
     }
 
