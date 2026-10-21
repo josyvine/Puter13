@@ -971,8 +971,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void routeGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
-        // Only route to Google Generative API if the provider is strictly Gemini mode (not OpenRouter/Puter)
-        if ("Gemini".equalsIgnoreCase(activeProvider) && !activeModelId.toLowerCase(Locale.US).contains("openrouter")) {
+        if ("Gemini".equalsIgnoreCase(activeProvider) && !activeModelId.toLowerCase(Locale.US).contains("openrouter") && !activeModelId.toLowerCase(Locale.US).contains("puter")) {
             dispatchGeminiGeneration(prompt, attachments, assistantMsg);
         } else {
             dispatchPuterGeneration(prompt, attachments, assistantMsg);
@@ -1041,7 +1040,7 @@ public class MainActivity extends AppCompatActivity {
                     @Override
                     public void onError(String errorMessage) {
                         runOnUiThread(() -> {
-                            assistantMsg.setText("Error: " + errorMessage);
+                            assistantMsg.setText(errorMessage);
                             assistantMsg.setStreaming(false);
                             chatAdapter.notifyItemChanged(chatAdapter.getItemCount() - 1);
                             finishGeneration();
@@ -1179,7 +1178,7 @@ public class MainActivity extends AppCompatActivity {
                 updateSendButtonState();
                 ecgLoaderContainer.setVisibility(View.VISIBLE);
 
-                if ("Gemini".equalsIgnoreCase(activeProvider) && !activeModelId.toLowerCase(Locale.US).contains("openrouter")) {
+                if ("Gemini".equalsIgnoreCase(activeProvider) && !activeModelId.toLowerCase(Locale.US).contains("openrouter") && !activeModelId.toLowerCase(Locale.US).contains("puter")) {
                     dispatchGeminiGeneration(prevUserMsg.getText(), prevUserMsg.getAttachments(), newBotMsg);
                 } else {
                     dispatchPuterGeneration(prevUserMsg.getText(), prevUserMsg.getAttachments(), newBotMsg);
@@ -1616,7 +1615,6 @@ public class MainActivity extends AppCompatActivity {
         }
         for (AIModelDefinition def : allModelsList) {
             if (def.getId().equalsIgnoreCase(modelId)) {
-                if (def.isImageGeneration()) return true;
                 List<String> cats = def.getCategories();
                 if (cats != null && (cats.contains("image_generation") || cats.contains("image"))) {
                     return true;
@@ -2102,10 +2100,6 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /**
-     * Opens the Puter OAuth login dialog with window.opener polyfill,
-     * extracts puter.auth.token directly from localStorage on login, and dismisses smoothly.
-     */
     @SuppressLint("SetJavaScriptEnabled")
     private void openPuterAuthDialog() {
         if (puterAuthDialog != null && puterAuthDialog.isShowing()) {
@@ -2148,7 +2142,6 @@ public class MainActivity extends AppCompatActivity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(popupWebView, true);
 
-        // Native JS Bridge to receive Puter postMessage and localStorage token
         popupWebView.addJavascriptInterface(new Object() {
             @JavascriptInterface
             public void onAuthMessageReceived(String rawData) {
@@ -2166,7 +2159,6 @@ public class MainActivity extends AppCompatActivity {
             }
         }, "AndroidPuterAuthBridge");
 
-        // WebChromeClient catching Puter SDK's window.close() call
         popupWebView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onCloseWindow(WebView window) {
@@ -2175,7 +2167,6 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Script polyfilling window.opener and checking localStorage for puter.auth.token
         final String openerPolyfillScript = 
                 "javascript:(function() {" +
                 "  if (!window.opener) {" +
