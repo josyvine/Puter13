@@ -14,7 +14,8 @@ import org.json.JSONObject;
 
 /**
  * Native controller managing the background 1x1 pixel WebView running headless_live_audio.html.
- * Bridges native Java calls to the browser AudioContext/WebSocket pipeline for Gemini Live.
+ * Bridges native Java calls to the browser AudioContext/WebSocket pipeline for Gemini Live,
+ * and controls client-side Puter SDK chat completions and live model discovery.
  */
 public class HeadlessAudioBridge {
     private static final String TAG = "HeadlessAudioBridge";
@@ -30,10 +31,19 @@ public class HeadlessAudioBridge {
         void onError(String errorMessage);
     }
 
+    public interface PuterBridgeEventListener {
+        void onPuterChunkReceived(String chunk);
+        void onPuterStreamComplete(String fullResponse);
+        void onPuterImageReceived(String imageUrl);
+        void onPuterModelsLoaded(String rawJson);
+        void onPuterError(String errorMessage);
+    }
+
     private final Context context;
     private final WebView webView;
     private final Handler mainHandler;
     private LiveAudioEventListener listener;
+    private PuterBridgeEventListener puterListener;
     private boolean isSessionActive = false;
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -47,6 +57,10 @@ public class HeadlessAudioBridge {
 
     public void setEventListener(LiveAudioEventListener listener) {
         this.listener = listener;
+    }
+
+    public void setPuterEventListener(PuterBridgeEventListener listener) {
+        this.puterListener = listener;
     }
 
     public boolean isSessionActive() {
@@ -77,6 +91,8 @@ public class HeadlessAudioBridge {
         webView.loadUrl(HEADLESS_ASSET_URL);
     }
 
+    // --- GEMINI LIVE COMMENTARY CONTROLS ---
+
     public void startCommentarySession(String scriptText, String personaPrompt) {
         mainHandler.post(() -> {
             isSessionActive = true;
@@ -105,7 +121,69 @@ public class HeadlessAudioBridge {
         });
     }
 
-    // Callbacks from WebAppInterface dispatched to listener
+    // --- PUTER.JS CLIENT-SIDE SDK CONTROLS ---
+
+    public void fetchPuterLiveModels() {
+        mainHandler.post(() -> {
+            Log.d(TAG, "Requesting Puter live models from headless worker");
+            webView.evaluateJavascript("if (typeof window.fetchPuterLiveModels === 'function') { window.fetchPuterLiveModels(); }", null);
+        });
+    }
+
+    public void sendPuterChat(String messagesJson, String modelId, boolean isStream, String systemMessage, String aspectRatio) {
+        mainHandler.post(() -> {
+            String messagesParam = messagesJson != null ? messagesJson : "[]";
+            String modelEscaped = JSONObject.quote(modelId != null ? modelId : "gpt-4o-mini");
+            String sysEscaped = systemMessage != null ? JSONObject.quote(systemMessage) : "\"\"";
+            String aspectEscaped = aspectRatio != null ? JSONObject.quote(aspectRatio) : "\"\"";
+
+            String js = String.format("if (typeof window.sendPuterChat === 'function') { window.sendPuterChat(%s, %s, %b, %s, %s); }",
+                    messagesParam, modelEscaped, isStream, sysEscaped, aspectEscaped);
+
+            webView.evaluateJavascript(js, null);
+        });
+    }
+
+    public void stopPuterChat() {
+        mainHandler.post(() -> {
+            webView.evaluateJavascript("if (typeof window.stopPuterChat === 'function') { window.stopPuterChat(); }", null);
+        });
+    }
+
+    // --- PUTER DISPATCHERS (CALLED BY WebAppInterface) ---
+
+    public void dispatchPuterChunk(String chunk) {
+        mainHandler.post(() -> {
+            if (puterListener != null) puterListener.onPuterChunkReceived(chunk);
+        });
+    }
+
+    public void dispatchPuterComplete(String fullResponse) {
+        mainHandler.post(() -> {
+            if (puterListener != null) puterListener.onPuterStreamComplete(fullResponse);
+        });
+    }
+
+    public void dispatchPuterImage(String imageUrl) {
+        mainHandler.post(() -> {
+            if (puterListener != null) puterListener.onPuterImageReceived(imageUrl);
+        });
+    }
+
+    public void dispatchPuterModels(String rawJson) {
+        mainHandler.post(() -> {
+            if (puterListener != null) puterListener.onPuterModelsLoaded(rawJson);
+        });
+    }
+
+    public void dispatchPuterError(String errorMessage) {
+        mainHandler.post(() -> {
+            if (puterListener != null) puterListener.onPuterError(errorMessage);
+        });
+    }
+
+    // --- LIVE AUDIO DISPATCHERS (CALLED BY WebAppInterface) ---
+
     public void dispatchConnected() {
         mainHandler.post(() -> {
             isSessionActive = true;
