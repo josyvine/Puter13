@@ -90,8 +90,8 @@ import java.util.Map;
 
 /**
  * 100% Pure Native Android Java Activity for Puter Unofficial.
- * Correctly routes Puter/OpenRouter models to Puter API and standalone Gemini to Google API.
- * Extracts puter.auth.token from localStorage upon sign-in to ensure active completions and live model sync.
+ * Routes Puter models through background Puter SDK web worker (identical to Puter11)
+ * and standalone Gemini models to Google Generative Language API.
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -171,7 +171,6 @@ public class MainActivity extends AppCompatActivity {
     private ChatAdapter chatAdapter;
     private StagedAttachmentsAdapter stagedAttachmentsAdapter;
     private ChatSessionManager sessionManager;
-    private PuterChatManager puterChatManager;
     private GeminiService geminiService;
     private HeadlessAudioBridge headlessAudioBridge;
     private WebAppInterface webAppInterface;
@@ -179,6 +178,7 @@ public class MainActivity extends AppCompatActivity {
 
     // State Variables
     private ChatSession currentSession;
+    private ChatMessage currentActiveAssistantMsg;
     private String activeModelId = AppConstants.DEFAULT_MODEL;
     private String activeProvider = "Puter";
     private String previousProviderBeforeLive = null;
@@ -203,7 +203,6 @@ public class MainActivity extends AppCompatActivity {
 
         prefs = getSharedPreferences(AppConstants.PREF_NAME, MODE_PRIVATE);
         sessionManager = ChatSessionManager.getInstance(this);
-        puterChatManager = new PuterChatManager(this);
         geminiService = new GeminiService(this);
         vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
 
@@ -369,7 +368,64 @@ public class MainActivity extends AppCompatActivity {
         return activeModelId;
     }
 
-    // --- PUBLIC METHODS CALLED BY WebAppInterface & BRIDGE ---
+    // --- PUBLIC METHODS CALLED BY WebAppInterface FOR PUTER.JS CHAT & MODELS ---
+
+    public void onPuterChunkReceived(String chunk) {
+        runOnUiThread(() -> {
+            if (currentActiveAssistantMsg != null) {
+                currentActiveAssistantMsg.setText(currentActiveAssistantMsg.getText() + chunk);
+                chatAdapter.notifyItemChanged(chatAdapter.getItemCount() - 1);
+                rvChatTimeline.smoothScrollToPosition(chatAdapter.getItemCount() - 1);
+            }
+        });
+    }
+
+    public void onPuterGenerationComplete(String fullResponse) {
+        runOnUiThread(() -> {
+            if (currentActiveAssistantMsg != null) {
+                if (fullResponse != null && !fullResponse.isEmpty()) {
+                    currentActiveAssistantMsg.setText(fullResponse);
+                }
+                currentActiveAssistantMsg.setStreaming(false);
+                chatAdapter.notifyItemChanged(chatAdapter.getItemCount() - 1);
+            }
+            finishGeneration();
+        });
+    }
+
+    public void onPuterImageReceived(String imageUrl) {
+        runOnUiThread(() -> {
+            if (currentActiveAssistantMsg != null) {
+                currentActiveAssistantMsg.setGeneratedImageUrl(imageUrl);
+                currentActiveAssistantMsg.setStreaming(false);
+                chatAdapter.notifyItemChanged(chatAdapter.getItemCount() - 1);
+            }
+            finishGeneration();
+        });
+    }
+
+    public void onPuterLiveModelsReceived(String rawJson) {
+        runOnUiThread(() -> {
+            prefs.edit().putString(AppConstants.KEY_PUTER_CACHED_LIVE_MODELS, rawJson).apply();
+            parsePuterModelsJson(rawJson);
+            setupAccordionAdapter();
+            updateSelectedModelDisplayText();
+            Toast.makeText(MainActivity.this, "Live Puter models updated!", Toast.LENGTH_SHORT).show();
+        });
+    }
+
+    public void onPuterGenerationError(String errorMessage) {
+        runOnUiThread(() -> {
+            if (currentActiveAssistantMsg != null) {
+                currentActiveAssistantMsg.setText("Puter Error: " + errorMessage);
+                currentActiveAssistantMsg.setStreaming(false);
+                chatAdapter.notifyItemChanged(chatAdapter.getItemCount() - 1);
+            }
+            finishGeneration();
+        });
+    }
+
+    // --- PUBLIC METHODS CALLED BY WebAppInterface & BRIDGE FOR GEMINI LIVE ---
 
     public void onLiveSessionConnected() {
         runOnUiThread(() -> {
@@ -935,6 +991,7 @@ public class MainActivity extends AppCompatActivity {
         assistantMsg.setStreaming(true);
         chatAdapter.addMessage(assistantMsg);
         currentSession.addMessage(assistantMsg);
+        currentActiveAssistantMsg = assistantMsg;
 
         String targetLang = prefs.getString(AppConstants.KEY_TARGET_LANGUAGE, "");
         String activeSystemMessage = prefs.getString(AppConstants.KEY_CUSTOM_INSTRUCTION, "");
@@ -1003,6 +1060,7 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void routeGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
+        currentActiveAssistantMsg = assistantMsg;
         if (isGeminiNativeModel(activeModelId)) {
             dispatchGeminiGeneration(prompt, attachments, assistantMsg);
         } else {
@@ -1032,57 +1090,66 @@ public class MainActivity extends AppCompatActivity {
         return text;
     }
 
+    /**
+     * Executes Puter multi-model chat or image generation via the headless Puter SDK worker.
+     * Uses official puter.js client runtime to resolve all OpenRouter/Together-AI models without HTTP 404s.
+     */
     private void dispatchPuterGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
-        List<ChatMessage> history = new ArrayList<>(currentSession.getMessages());
-        if (history.size() >= 2) {
-            history = history.subList(0, history.size() - 2);
-        }
+        currentActiveAssistantMsg = assistantMsg;
+        JSONArray messagesArray = new JSONArray();
 
-        puterChatManager.sendChatCompletion(
-                history, prompt, attachments, activeModelId, currentSession.getConfig(),
-                new PuterChatManager.PuterChatListener() {
-                    @Override
-                    public void onChunk(String chunkText) {
-                        runOnUiThread(() -> {
-                            assistantMsg.setText(assistantMsg.getText() + chunkText);
-                            chatAdapter.notifyItemChanged(chatAdapter.getItemCount() - 1);
-                            rvChatTimeline.smoothScrollToPosition(chatAdapter.getItemCount() - 1);
-                        });
-                    }
+        try {
+            List<ChatMessage> history = new ArrayList<>(currentSession.getMessages());
+            if (history.size() >= 2) {
+                history = history.subList(0, history.size() - 2);
+            }
 
-                    @Override
-                    public void onImageReceived(String imageUrlOrBase64) {
-                        runOnUiThread(() -> {
-                            assistantMsg.setGeneratedImageUrl(imageUrlOrBase64);
-                            chatAdapter.notifyItemChanged(chatAdapter.getItemCount() - 1);
-                            finishGeneration();
-                        });
-                    }
+            for (ChatMessage msg : history) {
+                JSONObject m = new JSONObject();
+                m.put("role", msg.getRole().equalsIgnoreCase(ChatMessage.ROLE_USER) ? "user" : "assistant");
+                m.put("content", msg.getText());
+                messagesArray.put(m);
+            }
 
-                    @Override
-                    public void onComplete(String fullText) {
-                        runOnUiThread(() -> {
-                            assistantMsg.setText(fullText);
-                            assistantMsg.setStreaming(false);
-                            chatAdapter.notifyItemChanged(chatAdapter.getItemCount() - 1);
-                            finishGeneration();
-                        });
-                    }
+            JSONObject current = new JSONObject();
+            current.put("role", "user");
 
-                    @Override
-                    public void onError(String errorMessage) {
-                        runOnUiThread(() -> {
-                            assistantMsg.setText(errorMessage);
-                            assistantMsg.setStreaming(false);
-                            chatAdapter.notifyItemChanged(chatAdapter.getItemCount() - 1);
-                            finishGeneration();
-                        });
-                    }
+            if (attachments != null && !attachments.isEmpty()) {
+                JSONArray contentBlocks = new JSONArray();
+                JSONObject textBlock = new JSONObject();
+                textBlock.put("type", "text");
+                textBlock.put("text", prompt);
+                contentBlocks.put(textBlock);
+
+                for (StagedFile file : attachments) {
+                    JSONObject imgBlock = new JSONObject();
+                    imgBlock.put("type", "image_url");
+                    JSONObject urlObj = new JSONObject();
+                    urlObj.put("url", file.getBase64DataUri());
+                    imgBlock.put("image_url", urlObj);
+                    contentBlocks.put(imgBlock);
                 }
-        );
+                current.put("content", contentBlocks);
+            } else {
+                current.put("content", prompt);
+            }
+            messagesArray.put(current);
+
+        } catch (Exception ignored) {}
+
+        String ratio = currentSession.getConfig().getAspectRatio();
+        String sysInst = currentSession.getConfig().getSystemInstructions();
+        boolean isImageGen = isImageGenerationModel(activeModelId);
+
+        if (headlessAudioBridge != null) {
+            headlessAudioBridge.sendPuterChat(messagesArray.toString(), activeModelId, !isImageGen, sysInst, ratio);
+        } else {
+            onPuterGenerationError("Headless worker bridge not available");
+        }
     }
 
     private void dispatchGeminiGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
+        currentActiveAssistantMsg = assistantMsg;
         JSONObject payload = new JSONObject();
         try {
             JSONArray contents = new JSONArray();
@@ -1173,7 +1240,9 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void stopCurrentGeneration() {
-        puterChatManager.stopCurrentGeneration();
+        if (headlessAudioBridge != null) {
+            headlessAudioBridge.stopPuterChat();
+        }
         geminiService.cancelCurrentCall();
         finishGeneration();
     }
@@ -1205,6 +1274,7 @@ public class MainActivity extends AppCompatActivity {
                 newBotMsg.setStreaming(true);
                 chatAdapter.addMessage(newBotMsg);
                 currentSession.addMessage(newBotMsg);
+                currentActiveAssistantMsg = newBotMsg;
 
                 isGenerating = true;
                 updateSendButtonState();
@@ -1293,32 +1363,10 @@ public class MainActivity extends AppCompatActivity {
                 }
 
                 if (AuthManager.getInstance(this).isLoggedIn()) {
-                    String token = AuthManager.getInstance(this).getAuthToken();
                     Toast.makeText(this, "Syncing live models...", Toast.LENGTH_SHORT).show();
-                    puterChatManager.fetchLiveModels(token, new PuterChatManager.PuterLiveModelsListener() {
-                        @Override
-                        public void onModelsFetched(String rawJson) {
-                            runOnUiThread(() -> {
-                                prefs.edit().putString(AppConstants.KEY_PUTER_CACHED_LIVE_MODELS, rawJson).apply();
-                                parsePuterModelsJson(rawJson);
-                                setupAccordionAdapter();
-                                updateSelectedModelDisplayText();
-                                Toast.makeText(MainActivity.this, "Live Puter models updated!", Toast.LENGTH_SHORT).show();
-                            });
-                        }
-
-                        @Override
-                        public void onError(String errorMessage) {
-                            runOnUiThread(() -> {
-                                if (allModelsList.isEmpty()) {
-                                    loadLocalPuterModels();
-                                    setupAccordionAdapter();
-                                }
-                                updateSelectedModelDisplayText();
-                                Log.w(TAG, "Puter live models fetch error: " + errorMessage);
-                            });
-                        }
-                    });
+                    if (headlessAudioBridge != null) {
+                        headlessAudioBridge.fetchPuterLiveModels();
+                    }
                 } else {
                     if (allModelsList.isEmpty()) {
                         loadLocalPuterModels();
@@ -2434,6 +2482,7 @@ public class MainActivity extends AppCompatActivity {
         }
         if (headlessAudioBridge != null) {
             headlessAudioBridge.stopCommentarySession();
+            headlessAudioBridge.stopPuterChat();
         }
         if (puterAuthDialog != null && puterAuthDialog.isShowing()) {
             puterAuthDialog.dismiss();
