@@ -90,7 +90,8 @@ import java.util.Map;
 
 /**
  * 100% Pure Native Android Java Activity for Puter Unofficial.
- * Intercepts Puter SDK postMessage and window.close() to dismiss OAuth popup cleanly.
+ * Correctly routes Puter/OpenRouter models to Puter API and standalone Gemini to Google API.
+ * Extracts puter.auth.token from localStorage upon sign-in to ensure active completions and live model sync.
  */
 public class MainActivity extends AppCompatActivity {
 
@@ -930,7 +931,7 @@ public class MainActivity extends AppCompatActivity {
         }
         currentSession.getConfig().setSystemInstructions(activeSystemMessage);
 
-        boolean isImageGen = PuterChatManager.isImageModel(activeModelId);
+        boolean isImageGen = isImageGenerationModel(activeModelId);
         String ratio = "1:1";
         if (spnAspectRatio != null && spnAspectRatio.getSelectedItem() != null) {
             String selected = spnAspectRatio.getSelectedItem().toString();
@@ -970,7 +971,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void routeGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
-        if ("Gemini".equalsIgnoreCase(activeProvider) || activeModelId.toLowerCase(Locale.US).contains("gemini")) {
+        // Only route to Google Generative API if the provider is strictly Gemini mode (not OpenRouter/Puter)
+        if ("Gemini".equalsIgnoreCase(activeProvider) && !activeModelId.toLowerCase(Locale.US).contains("openrouter")) {
             dispatchGeminiGeneration(prompt, attachments, assistantMsg);
         } else {
             dispatchPuterGeneration(prompt, attachments, assistantMsg);
@@ -1177,7 +1179,7 @@ public class MainActivity extends AppCompatActivity {
                 updateSendButtonState();
                 ecgLoaderContainer.setVisibility(View.VISIBLE);
 
-                if ("Gemini".equalsIgnoreCase(activeProvider) || activeModelId.toLowerCase(Locale.US).contains("gemini")) {
+                if ("Gemini".equalsIgnoreCase(activeProvider) && !activeModelId.toLowerCase(Locale.US).contains("openrouter")) {
                     dispatchGeminiGeneration(prevUserMsg.getText(), prevUserMsg.getAttachments(), newBotMsg);
                 } else {
                     dispatchPuterGeneration(prevUserMsg.getText(), prevUserMsg.getAttachments(), newBotMsg);
@@ -1509,7 +1511,7 @@ public class MainActivity extends AppCompatActivity {
         List<String> cats = new ArrayList<>();
         if (combined.contains("image") || combined.contains("dall-e") || combined.contains("flux") ||
                 combined.contains("stable-diffusion") || combined.contains("imagen") || combined.contains("midjourney") ||
-                combined.contains("txt2img")) {
+                combined.contains("txt2img") || combined.contains("banana")) {
             cats.add("image_generation");
         }
         if (combined.contains("vision") || combined.contains("vl") || combined.contains("4o") ||
@@ -1605,9 +1607,28 @@ public class MainActivity extends AppCompatActivity {
         return str.substring(0, 1).toUpperCase(Locale.US) + str.substring(1);
     }
 
+    private boolean isImageGenerationModel(String modelId) {
+        if (modelId == null) return false;
+        String mLower = modelId.toLowerCase(Locale.US);
+        if (mLower.contains("banana") || mLower.contains("dall-e") || mLower.contains("flux") ||
+            mLower.contains("imagen") || mLower.contains("midjourney") || mLower.contains("txt2img")) {
+            return true;
+        }
+        for (AIModelDefinition def : allModelsList) {
+            if (def.getId().equalsIgnoreCase(modelId)) {
+                if (def.isImageGeneration()) return true;
+                List<String> cats = def.getCategories();
+                if (cats != null && (cats.contains("image_generation") || cats.contains("image"))) {
+                    return true;
+                }
+            }
+        }
+        return PuterChatManager.isImageModel(modelId);
+    }
+
     private void updateAspectRatioBarVisibility() {
         if (aspectRatioBar == null) return;
-        boolean isImage = PuterChatManager.isImageModel(activeModelId);
+        boolean isImage = isImageGenerationModel(activeModelId);
         aspectRatioBar.setVisibility(isImage ? View.VISIBLE : View.GONE);
     }
 
@@ -2065,7 +2086,7 @@ public class MainActivity extends AppCompatActivity {
         });
     }
 
-    // --- PUTER AUTHENTICATION POPUP WITH AUTO-DISMISS & WINDOW.OPENER POLYFILL ---
+    // --- PUTER AUTHENTICATION POPUP WITH AUTO-DISMISS & LOCALSTORAGE TOKEN EXTRACTION ---
 
     private void toggleAuthMirror() {
         boolean loggedIn = AuthManager.getInstance(this).isLoggedIn();
@@ -2082,9 +2103,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Opens the authentic Puter OAuth login dialog with the Blue Bar button.
-     * Injects window.opener polyfill so Puter's postMessage does not crash, and catches
-     * window.close() via WebChromeClient to dismiss instantly.
+     * Opens the Puter OAuth login dialog with window.opener polyfill,
+     * extracts puter.auth.token directly from localStorage on login, and dismisses smoothly.
      */
     @SuppressLint("SetJavaScriptEnabled")
     private void openPuterAuthDialog() {
@@ -2128,12 +2148,21 @@ public class MainActivity extends AppCompatActivity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(popupWebView, true);
 
-        // JavaScript interface to capture Puter postMessage without crashing
+        // Native JS Bridge to receive Puter postMessage and localStorage token
         popupWebView.addJavascriptInterface(new Object() {
             @JavascriptInterface
             public void onAuthMessageReceived(String rawData) {
                 Log.d(TAG, "Puter Auth postMessage received via JS: " + rawData);
                 runOnUiThread(() -> completePuterAuth());
+            }
+
+            @JavascriptInterface
+            public void onTokenExtracted(String token) {
+                if (token != null && !token.trim().isEmpty()) {
+                    Log.d(TAG, "Puter Token extracted from localStorage: " + token);
+                    AuthManager.getInstance(MainActivity.this).setAuthToken(token);
+                    runOnUiThread(() -> completePuterAuth());
+                }
             }
         }, "AndroidPuterAuthBridge");
 
@@ -2146,7 +2175,7 @@ public class MainActivity extends AppCompatActivity {
             }
         });
 
-        // Script polyfilling window.opener so Puter doesn't throw TypeError
+        // Script polyfilling window.opener and checking localStorage for puter.auth.token
         final String openerPolyfillScript = 
                 "javascript:(function() {" +
                 "  if (!window.opener) {" +
@@ -2159,6 +2188,12 @@ public class MainActivity extends AppCompatActivity {
                 "      }" +
                 "    };" +
                 "  }" +
+                "  try {" +
+                "    var token = localStorage.getItem('puter.auth.token');" +
+                "    if (token && window.AndroidPuterAuthBridge) {" +
+                "      window.AndroidPuterAuthBridge.onTokenExtracted(token);" +
+                "    }" +
+                "  } catch(e) {}" +
                 "})()";
 
         popupWebView.setWebViewClient(new WebViewClient() {
@@ -2188,7 +2223,6 @@ public class MainActivity extends AppCompatActivity {
                 view.evaluateJavascript(openerPolyfillScript, null);
                 CookieManager.getInstance().flush();
 
-                // Check cookies for session credentials
                 String cookies = CookieManager.getInstance().getCookie("https://puter.com");
                 if (cookies != null && (cookies.contains("puter_auth=") || cookies.contains("token=") || cookies.contains("auth_token="))) {
                     checkAuthRedirect(url != null ? url : "https://puter.com/app");
@@ -2245,6 +2279,10 @@ public class MainActivity extends AppCompatActivity {
             }
             refreshDropdownUI();
             Toast.makeText(MainActivity.this, "Puter Sign-In Successful!", Toast.LENGTH_SHORT).show();
+            // Automatically fetch live models if in live mode
+            if (isLiveMode) {
+                loadModels();
+            }
         });
     }
 
