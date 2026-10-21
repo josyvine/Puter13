@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.webkit.CookieManager;
 
 import com.puter.unofficial.models.ChatMessage;
 import com.puter.unofficial.models.GenerationConfig;
@@ -28,7 +29,7 @@ import okhttp3.ResponseBody;
 
 /**
  * Pure Java OkHttp client for Puter AI chat completions and SSE streaming over HTTP.
- * Fully replaces the in-browser puter.ai.chat(...) JavaScript calls with native networking.
+ * Correctly intercepts HTTP errors and injects WebKit session cookies to bypass missing tokens.
  */
 public class PuterChatManager {
     private static final String TAG = "PuterChatManager";
@@ -85,8 +86,14 @@ public class PuterChatManager {
                         .post(RequestBody.create(rootPayload.toString(), JSON))
                         .addHeader("Accept", "application/json");
 
+                // Inject Bearer token or WebKit cookies to ensure authentication succeeds
                 if (authToken != null && !authToken.trim().isEmpty()) {
                     reqBuilder.addHeader("Authorization", "Bearer " + authToken.trim());
+                } else {
+                    String cookies = CookieManager.getInstance().getCookie("https://puter.com");
+                    if (cookies != null && !cookies.isEmpty()) {
+                        reqBuilder.addHeader("Cookie", cookies);
+                    }
                 }
 
                 Response resp = client.newCall(reqBuilder.build()).execute();
@@ -101,8 +108,14 @@ public class PuterChatManager {
                         .url("https://api.puter.com/v2/ai/models")
                         .get()
                         .addHeader("Accept", "application/json");
+                        
                 if (authToken != null && !authToken.trim().isEmpty()) {
                     fallbackBuilder.addHeader("Authorization", "Bearer " + authToken.trim());
+                } else {
+                    String cookies = CookieManager.getInstance().getCookie("https://puter.com");
+                    if (cookies != null && !cookies.isEmpty()) {
+                        fallbackBuilder.addHeader("Cookie", cookies);
+                    }
                 }
 
                 Response fallbackResp = client.newCall(fallbackBuilder.build()).execute();
@@ -195,8 +208,14 @@ public class PuterChatManager {
                         .post(RequestBody.create(rootPayload.toString(), JSON))
                         .addHeader("Accept", !isImageGen ? "text/event-stream, application/json" : "application/json");
 
+                // Check Bearer Token first, otherwise inject cookies
                 if (authToken != null && !authToken.trim().isEmpty()) {
                     reqBuilder.addHeader("Authorization", "Bearer " + authToken);
+                } else {
+                    String cookies = CookieManager.getInstance().getCookie("https://puter.com");
+                    if (cookies != null && !cookies.isEmpty()) {
+                        reqBuilder.addHeader("Cookie", cookies);
+                    }
                 }
 
                 Request request = reqBuilder.build();
@@ -212,7 +231,7 @@ public class PuterChatManager {
                     @Override
                     public void onResponse(Call call, Response response) {
                         if (!response.isSuccessful()) {
-                            // Try fallback to v2 chat endpoint if drivers/call returned 404/400
+                            // Try fallback to v2 chat endpoint if drivers/call returned 404/400/401
                             executeV2Fallback(messagesArray, modelId, config, authToken, isImageGen, listener);
                             return;
                         }
@@ -304,6 +323,11 @@ public class PuterChatManager {
 
             if (authToken != null && !authToken.isEmpty()) {
                 b.addHeader("Authorization", "Bearer " + authToken);
+            } else {
+                String cookies = CookieManager.getInstance().getCookie("https://puter.com");
+                if (cookies != null && !cookies.isEmpty()) {
+                    b.addHeader("Cookie", cookies);
+                }
             }
 
             activeCall = client.newCall(b.build());
@@ -317,10 +341,18 @@ public class PuterChatManager {
                 public void onResponse(Call call, Response response) {
                     try {
                         ResponseBody body = response.body();
+                        // Explicitly check for HTTP failure to avoid parsing an empty stream and generating ghost bubbles
+                        if (!response.isSuccessful()) {
+                            String errBody = body != null ? body.string() : "";
+                            postError(listener, "Puter API Error: HTTP " + response.code() + " " + errBody);
+                            return;
+                        }
+
                         if (body == null) {
                             postError(listener, "Null response from Puter V2");
                             return;
                         }
+                        
                         BufferedReader reader = new BufferedReader(new InputStreamReader(body.byteStream()));
                         String line;
                         StringBuilder full = new StringBuilder();
@@ -374,8 +406,11 @@ public class PuterChatManager {
 
     public static boolean isImageModel(String modelId) {
         if (modelId == null) return false;
-        String m = modelId.toLowerCase();
-        return m.contains("dall-e") || m.contains("flux") || m.contains("imagen") || m.contains("midjourney") || m.contains("txt2img");
+        String m = modelId.toLowerCase(Locale.US);
+        // Added banana and image to capture Nano Banana image models properly
+        return m.contains("dall-e") || m.contains("flux") || m.contains("imagen") || 
+               m.contains("midjourney") || m.contains("txt2img") || m.contains("banana") || 
+               m.contains("image");
     }
 
     private void postError(PuterChatListener listener, String err) {
