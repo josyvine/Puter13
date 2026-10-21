@@ -21,6 +21,10 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Set;
 
+/**
+ * Hierarchical Accordion Adapter for AI Model Selection.
+ * Provides categorization by Parent provider, capability tags, and clean visual status.
+ */
 public class ModelAccordionAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
 
     private static final int TYPE_HEADER = 0;
@@ -69,6 +73,17 @@ public class ModelAccordionAdapter extends RecyclerView.Adapter<RecyclerView.Vie
         this.masterList.clear();
         if (items != null) this.masterList.addAll(items);
         this.selectedModelId = selectedModelId;
+
+        // Auto-expand the category containing the active model on first load
+        if (expandedCategories.isEmpty() && selectedModelId != null && !selectedModelId.isEmpty()) {
+            for (AccordionItem it : this.masterList) {
+                if (!it.isHeader && it.model != null && isModelMatch(it.model, selectedModelId)) {
+                    expandedCategories.add(it.categoryName);
+                    break;
+                }
+            }
+        }
+
         rebuildDisplayList();
     }
 
@@ -139,7 +154,7 @@ public class ModelAccordionAdapter extends RecyclerView.Adapter<RecyclerView.Vie
             }
             c.tvName.setText(displayName);
 
-            // 2. Format Categories as clean subtitles e.g. "(text_chat, vision)" matching Puter11
+            // 2. Format Categories as clean subtitles e.g. "(text_chat, vision)"
             List<String> cats = m.getCategories();
             if (cats != null && !cats.isEmpty()) {
                 StringBuilder catStr = new StringBuilder("(");
@@ -158,8 +173,8 @@ public class ModelAccordionAdapter extends RecyclerView.Adapter<RecyclerView.Vie
                 c.tvContext.setVisibility(View.VISIBLE);
             }
 
-            // 3. Selection State
-            boolean isSelected = m.getId().equalsIgnoreCase(selectedModelId);
+            // 3. Resilient Selection State Matching
+            boolean isSelected = isModelMatch(m, selectedModelId);
             c.ivCheck.setVisibility(isSelected ? View.VISIBLE : View.GONE);
             c.tvName.setTextColor(isSelected ? Color.parseColor("#1a73e8") : Color.parseColor("#333333"));
             c.tvContext.setTextColor(isSelected ? Color.parseColor("#5b93d9") : Color.parseColor("#777777"));
@@ -167,25 +182,29 @@ public class ModelAccordionAdapter extends RecyclerView.Adapter<RecyclerView.Vie
             // 4. Populate capability pill badges cleanly
             c.llTags.removeAllViews();
             Context ctx = c.itemView.getContext();
-            List<String> tags = m.getCapabilityTags();
-            if (tags != null) {
-                for (String tag : tags) {
-                    if (tag.equalsIgnoreCase("text_chat") || tag.equalsIgnoreCase("unknown")) {
-                        continue; // Keep chips clean and reserved for notable capabilities
-                    }
-                    TextView tagView = new TextView(ctx);
-                    tagView.setText(tag.replace("_", " "));
-                    tagView.setTextSize(9.5f);
-                    tagView.setTextColor(Color.parseColor("#1a73e8"));
-                    tagView.setBackgroundResource(R.drawable.bg_pill_badge);
-                    tagView.setPadding(12, 3, 12, 3);
+            List<String> tags = new ArrayList<>(m.getCapabilityTags());
 
-                    LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                    lp.setMarginEnd(8);
-                    tagView.setLayoutParams(lp);
-                    c.llTags.addView(tagView);
+            // Ensure verified capabilities are included even if missing from raw tags
+            if (m.isSupportsImageGen() && !tags.contains("image_gen")) tags.add("image_gen");
+            if (m.isSupportsVision() && !tags.contains("vision")) tags.add("vision");
+            if (m.isGeminiLive() && !tags.contains("live")) tags.add("live");
+
+            for (String tag : tags) {
+                if (tag.equalsIgnoreCase("text_chat") || tag.equalsIgnoreCase("unknown")) {
+                    continue; // Keep badges reserved for standout capabilities
                 }
+                TextView tagView = new TextView(ctx);
+                tagView.setText(tag.replace("_", " "));
+                tagView.setTextSize(9.5f);
+                tagView.setTextColor(Color.parseColor("#1a73e8"));
+                tagView.setBackgroundResource(R.drawable.bg_pill_badge);
+                tagView.setPadding(12, 3, 12, 3);
+
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                lp.setMarginEnd(8);
+                tagView.setLayoutParams(lp);
+                c.llTags.addView(tagView);
             }
 
             c.itemView.setOnClickListener(v -> {
@@ -194,6 +213,16 @@ public class ModelAccordionAdapter extends RecyclerView.Adapter<RecyclerView.Vie
                 if (listener != null) listener.onModelSelected(m);
             });
         }
+    }
+
+    private boolean isModelMatch(AIModelDefinition def, String targetId) {
+        if (def == null || targetId == null) return false;
+        if (def.getId().equalsIgnoreCase(targetId)) return true;
+        if (def.getDisplayName().equalsIgnoreCase(targetId)) return true;
+
+        String normDef = def.getId().replace(":", "/").toLowerCase(Locale.US);
+        String normTarget = targetId.replace(":", "/").toLowerCase(Locale.US);
+        return normDef.equalsIgnoreCase(normTarget);
     }
 
     @Override
