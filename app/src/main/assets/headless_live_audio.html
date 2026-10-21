@@ -3,15 +3,16 @@
 <head>
     <meta charset="utf-8">
     <title>Headless Live Audio Engine</title>
-    <!-- Puter.js SDK for authentic native OAuth login via MyWebChromeClient.onCreateWindow -->
+    <!-- Puter.js SDK for authentic native OAuth login via MyWebChromeClient.onCreateWindow and background chat/model RPC -->
     <script src="https://js.puter.com/v2/"></script>
 </head>
 <body>
 <script>
 /**
- * Headless Live Audio & WebSocket Bridge for Puter Unofficial
+ * Headless Live Audio, WebSocket & Puter SDK Bridge for Puter Unofficial
  * Handles Gemini Live BidiGenerateContent WebSocket, 24kHz audio streaming,
- * 16kHz microphone capture, barge-in interruption detection, and Puter SDK Auth.
+ * 16kHz microphone capture, barge-in interruption detection, Puter SDK Auth,
+ * and official client-side Puter AI chat completions & model listing.
  */
 let liveWs = null;
 let micAudioContext = null;
@@ -21,6 +22,9 @@ let micScriptProcessor = null;
 let isSessionActive = false;
 let currentPersona = "";
 let nextPlaybackTime = 0;
+
+// State tracking for Puter chat generation
+let isPuterChatAborted = false;
 
 function getBridge() {
     return window.AndroidInterface || null;
@@ -379,6 +383,188 @@ function playAudioChunk(base64Pcm) {
         console.error("Playback error:", e);
     }
 }
+
+// =========================================================================
+// PUTER.JS CLIENT-SIDE SDK INTEGRATION (EXACT OLD APP LOGIC)
+// =========================================================================
+
+/**
+ * Fetches live models using the official Puter SDK runtime.
+ * Automatically resolves OpenRouter, Together-AI, and Puter provider models.
+ */
+window.fetchPuterLiveModels = async function() {
+    const bridge = getBridge();
+    try {
+        if (typeof puter === 'undefined' || !puter.ai) {
+            if (bridge && bridge.onPuterError) {
+                bridge.onPuterError("Puter SDK is not ready yet in headless worker.");
+            }
+            return;
+        }
+
+        let models = null;
+        if (typeof puter.ai.chat?.models === 'function') {
+            models = await puter.ai.chat.models();
+        } else if (typeof puter.ai.listModels === 'function') {
+            models = await puter.ai.listModels();
+        }
+
+        if (models) {
+            const jsonStr = (typeof models === 'string') ? models : JSON.stringify(models);
+            if (bridge && bridge.onPuterLiveModelsResult) {
+                bridge.onPuterLiveModelsResult(jsonStr);
+            }
+        } else {
+            if (bridge && bridge.onPuterError) {
+                bridge.onPuterError("Puter models call returned empty response.");
+            }
+        }
+    } catch (err) {
+        console.error("Puter live models fetch error:", err);
+        if (bridge && bridge.onPuterError) {
+            bridge.onPuterError("Puter models error: " + (err.message || err));
+        }
+    }
+};
+
+/**
+ * Sends a chat turn or image generation request via official puter.js client.
+ * Forwards tokens in real time to the native Android ChatAdapter.
+ */
+window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMessage, aspectRatio) {
+    const bridge = getBridge();
+    isPuterChatAborted = false;
+
+    try {
+        if (typeof puter === 'undefined' || !puter.ai) {
+            if (bridge && bridge.onPuterError) {
+                bridge.onPuterError("Puter SDK is not initialized.");
+            }
+            return;
+        }
+
+        // Parse messages if passed as serialized JSON string from Java
+        let messages = messagesInput;
+        if (typeof messages === 'string') {
+            try {
+                messages = JSON.parse(messages);
+            } catch(e) {
+                messages = [{ role: 'user', content: messagesInput }];
+            }
+        }
+
+        // Detect if this is an image generation model
+        const modelLower = (modelId || "").toLowerCase();
+        const isImageGen = modelLower.includes("banana") || modelLower.includes("dall-e") || 
+                           modelLower.includes("flux") || modelLower.includes("imagen") || 
+                           modelLower.includes("midjourney") || modelLower.includes("txt2img");
+
+        if (isImageGen) {
+            // Extract the user prompt for image generation
+            let promptText = "";
+            if (Array.isArray(messages) && messages.length > 0) {
+                const last = messages[messages.length - 1];
+                promptText = typeof last.content === 'string' ? last.content : JSON.stringify(last.content);
+            } else if (typeof messages === 'string') {
+                promptText = messages;
+            }
+
+            const imgOptions = { model: modelId };
+            if (aspectRatio) {
+                imgOptions.aspect_ratio = aspectRatio;
+            }
+
+            // Call official Puter txt2img
+            const imageResult = await puter.ai.txt2img(promptText, imgOptions);
+            let finalUrl = "";
+            if (imageResult) {
+                if (typeof imageResult === 'string') {
+                    finalUrl = imageResult;
+                } else if (imageResult.src) {
+                    finalUrl = imageResult.src;
+                } else if (imageResult.url) {
+                    finalUrl = imageResult.url;
+                }
+            }
+
+            if (finalUrl && bridge && bridge.onPuterImageResult) {
+                bridge.onPuterImageResult(finalUrl);
+            } else if (bridge && bridge.onPuterError) {
+                bridge.onPuterError("Could not extract image URL from Puter SDK result.");
+            }
+            return;
+        }
+
+        // Configure options for text streaming completion
+        const chatOptions = {
+            model: modelId,
+            stream: isStream !== false
+        };
+
+        if (systemMessage && systemMessage.trim().length > 0) {
+            chatOptions.system = systemMessage.trim();
+        }
+
+        // Execute chat completion via official Puter SDK
+        const response = await puter.ai.chat(messages, chatOptions);
+
+        if (chatOptions.stream && response && response[Symbol.asyncIterator]) {
+            let fullAccumulator = "";
+            for await (const chunk of response) {
+                if (isPuterChatAborted) break;
+
+                let deltaText = "";
+                if (typeof chunk === 'string') {
+                    deltaText = chunk;
+                } else if (chunk?.text) {
+                    deltaText = chunk.text;
+                } else if (chunk?.message?.content) {
+                    deltaText = chunk.message.content;
+                }
+
+                if (deltaText) {
+                    fullAccumulator += deltaText;
+                    if (bridge && bridge.onPuterStreamChunk) {
+                        bridge.onPuterStreamChunk(deltaText);
+                    }
+                }
+            }
+
+            if (!isPuterChatAborted && bridge && bridge.onPuterStreamComplete) {
+                bridge.onPuterStreamComplete(fullAccumulator);
+            }
+        } else {
+            // Non-stream or single-turn response
+            let completeText = "";
+            if (typeof response === 'string') {
+                completeText = response;
+            } else if (response?.message?.content) {
+                completeText = response.message.content;
+            } else if (response?.text) {
+                completeText = response.text;
+            } else {
+                completeText = JSON.stringify(response);
+            }
+
+            if (bridge && bridge.onPuterStreamComplete) {
+                bridge.onPuterStreamComplete(completeText);
+            }
+        }
+
+    } catch (err) {
+        console.error("Puter chat completion error:", err);
+        if (!isPuterChatAborted && bridge && bridge.onPuterError) {
+            bridge.onPuterError("Puter error: " + (err.message || JSON.stringify(err)));
+        }
+    }
+};
+
+/**
+ * Aborts any currently active Puter text stream generation.
+ */
+window.stopPuterChat = function() {
+    isPuterChatAborted = true;
+};
 </script>
 </body>
 </html>
