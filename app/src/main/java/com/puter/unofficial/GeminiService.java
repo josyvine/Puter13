@@ -19,6 +19,7 @@ import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -91,6 +92,15 @@ public class GeminiService {
         executorService.execute(() -> {
             Call call = null;
             try {
+                // 1. Guard against non-Gemini router models accidentally routed to Google API
+                if (isNonGeminiModel(modelId)) {
+                    deliverError(listener, "Invalid model for Google Gemini API: " + modelId + 
+                            ". This model belongs to Puter/OpenRouter. Please switch active provider to Puter.");
+                    return;
+                }
+
+                String sanitizedModel = sanitizeModelId(modelId);
+
                 SharedPreferences prefs = context.getSharedPreferences(AppConstants.PREF_NAME, Context.MODE_PRIVATE);
                 String apiKey = prefs.getString(AppConstants.KEY_GEMINI_API_KEY, "");
 
@@ -100,7 +110,7 @@ public class GeminiService {
 
                 String cleanPayload = processUrlContextAndCleanPayload(payloadJson);
 
-                String baseUrl = "https://generativelanguage.googleapis.com/v1beta/models/" + modelId;
+                String baseUrl = "https://generativelanguage.googleapis.com/v1beta/models/" + sanitizedModel;
                 String action = isStream ? ":streamGenerateContent?alt=sse&key=" : ":generateContent?key=";
                 String targetUrl = baseUrl + action + apiKey;
 
@@ -109,6 +119,7 @@ public class GeminiService {
 
                 Request request = new Request.Builder()
                         .url(targetUrl)
+                        .addHeader("x-goog-api-key", apiKey)
                         .post(body)
                         .build();
 
@@ -154,6 +165,25 @@ public class GeminiService {
                 }
             }
         });
+    }
+
+    private boolean isNonGeminiModel(String modelId) {
+        if (modelId == null) return true;
+        String m = modelId.toLowerCase(Locale.US);
+        return m.contains("openrouter") || m.contains("togetherai") || m.contains("puter") || 
+               m.contains("claude") || m.contains("deepseek") || m.contains("gpt-") || 
+               m.contains("mistral") || m.contains("qwen") || m.contains(":") || m.contains("/");
+    }
+
+    private String sanitizeModelId(String rawModelId) {
+        if (rawModelId == null || rawModelId.trim().isEmpty()) {
+            return "gemini-1.5-flash";
+        }
+        String cleaned = rawModelId.trim();
+        if (cleaned.startsWith("models/")) {
+            cleaned = cleaned.substring(7);
+        }
+        return cleaned;
     }
 
     private void parseSingleResponse(String jsonStr, GeminiStreamListener listener) {
@@ -375,7 +405,11 @@ public class GeminiService {
                 }
 
                 String targetUrl = AppConstants.GEMINI_MODELS_LIST_URL + "?key=" + keyToUse;
-                Request request = new Request.Builder().url(targetUrl).get().build();
+                Request request = new Request.Builder()
+                        .url(targetUrl)
+                        .addHeader("x-goog-api-key", keyToUse)
+                        .get()
+                        .build();
 
                 Response response = client.newCall(request).execute();
                 if (!response.isSuccessful()) {
