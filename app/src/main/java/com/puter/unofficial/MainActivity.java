@@ -181,6 +181,7 @@ public class MainActivity extends AppCompatActivity {
     private ChatSession currentSession;
     private String activeModelId = AppConstants.DEFAULT_MODEL;
     private String activeProvider = "Puter";
+    private String previousProviderBeforeLive = null;
     private boolean isLiveMode = false;
     private boolean isAutoMode = false;
     private boolean isGenerating = false;
@@ -394,6 +395,12 @@ public class MainActivity extends AppCompatActivity {
                 toggleStarAnimation(false);
                 addSystemMessage("🔴 Disconnected from Live Model");
                 Toast.makeText(MainActivity.this, "Disconnected from Live Model", Toast.LENGTH_SHORT).show();
+
+                if (previousProviderBeforeLive != null) {
+                    activeProvider = previousProviderBeforeLive;
+                    prefs.edit().putString(AppConstants.KEY_ACTIVE_PROVIDER, activeProvider).apply();
+                    previousProviderBeforeLive = null;
+                }
             }
         });
     }
@@ -406,6 +413,12 @@ public class MainActivity extends AppCompatActivity {
                 toggleStarAnimation(false);
                 addSystemMessage("🔴 Disconnected from Live Model");
                 Toast.makeText(MainActivity.this, "Live Model Disconnected: " + err, Toast.LENGTH_SHORT).show();
+
+                if (previousProviderBeforeLive != null) {
+                    activeProvider = previousProviderBeforeLive;
+                    prefs.edit().putString(AppConstants.KEY_ACTIVE_PROVIDER, activeProvider).apply();
+                    previousProviderBeforeLive = null;
+                }
             }
         });
     }
@@ -970,8 +983,27 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
+    /**
+     * Accurately determines if the selected model is a standalone native Google Gemini API model.
+     * Prevents any Puter or OpenRouter model from ever being misrouted to Google API.
+     */
+    private boolean isGeminiNativeModel(String modelId) {
+        if (modelId == null) return false;
+        String lower = modelId.toLowerCase(Locale.US);
+        if (lower.contains("openrouter") || lower.contains("togetherai") || lower.contains("puter") || lower.contains(":")) {
+            return false;
+        }
+        for (AIModelDefinition def : allModelsList) {
+            if (def.getId().equalsIgnoreCase(modelId)) {
+                String parent = def.getParentGroup();
+                return parent != null && parent.toLowerCase(Locale.US).contains("gemini");
+            }
+        }
+        return "Gemini".equalsIgnoreCase(activeProvider);
+    }
+
     private void routeGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
-        if ("Gemini".equalsIgnoreCase(activeProvider) && !activeModelId.toLowerCase(Locale.US).contains("openrouter") && !activeModelId.toLowerCase(Locale.US).contains("puter")) {
+        if (isGeminiNativeModel(activeModelId)) {
             dispatchGeminiGeneration(prompt, attachments, assistantMsg);
         } else {
             dispatchPuterGeneration(prompt, attachments, assistantMsg);
@@ -1178,7 +1210,7 @@ public class MainActivity extends AppCompatActivity {
                 updateSendButtonState();
                 ecgLoaderContainer.setVisibility(View.VISIBLE);
 
-                if ("Gemini".equalsIgnoreCase(activeProvider) && !activeModelId.toLowerCase(Locale.US).contains("openrouter") && !activeModelId.toLowerCase(Locale.US).contains("puter")) {
+                if (isGeminiNativeModel(activeModelId)) {
                     dispatchGeminiGeneration(prevUserMsg.getText(), prevUserMsg.getAttachments(), newBotMsg);
                 } else {
                     dispatchPuterGeneration(prevUserMsg.getText(), prevUserMsg.getAttachments(), newBotMsg);
@@ -1245,7 +1277,6 @@ public class MainActivity extends AppCompatActivity {
                     parseGeminiModelsJson(cached);
                     setupAccordionAdapter();
                 } else {
-                    selectedModelText.setText("No Live Gemini Models Cached (Fetch in Settings)");
                     loadLocalGeminiModels();
                     setupAccordionAdapter();
                 }
@@ -1262,8 +1293,8 @@ public class MainActivity extends AppCompatActivity {
                 }
 
                 if (AuthManager.getInstance(this).isLoggedIn()) {
-                    selectedModelText.setText("Syncing live models...");
                     String token = AuthManager.getInstance(this).getAuthToken();
+                    Toast.makeText(this, "Syncing live models...", Toast.LENGTH_SHORT).show();
                     puterChatManager.fetchLiveModels(token, new PuterChatManager.PuterLiveModelsListener() {
                         @Override
                         public void onModelsFetched(String rawJson) {
@@ -1271,6 +1302,7 @@ public class MainActivity extends AppCompatActivity {
                                 prefs.edit().putString(AppConstants.KEY_PUTER_CACHED_LIVE_MODELS, rawJson).apply();
                                 parsePuterModelsJson(rawJson);
                                 setupAccordionAdapter();
+                                updateSelectedModelDisplayText();
                                 Toast.makeText(MainActivity.this, "Live Puter models updated!", Toast.LENGTH_SHORT).show();
                             });
                         }
@@ -1282,6 +1314,7 @@ public class MainActivity extends AppCompatActivity {
                                     loadLocalPuterModels();
                                     setupAccordionAdapter();
                                 }
+                                updateSelectedModelDisplayText();
                                 Log.w(TAG, "Puter live models fetch error: " + errorMessage);
                             });
                         }
@@ -1291,7 +1324,6 @@ public class MainActivity extends AppCompatActivity {
                         loadLocalPuterModels();
                         setupAccordionAdapter();
                     }
-                    selectedModelText.setText("Sign in for Live Models");
                 }
             } else {
                 loadLocalPuterModels();
@@ -1299,6 +1331,11 @@ public class MainActivity extends AppCompatActivity {
             }
         }
 
+        updateSelectedModelDisplayText();
+        updateAspectRatioBarVisibility();
+    }
+
+    private void updateSelectedModelDisplayText() {
         boolean found = false;
         for (AIModelDefinition m : allModelsList) {
             if (m.getId().equalsIgnoreCase(activeModelId)) {
@@ -1315,7 +1352,6 @@ public class MainActivity extends AppCompatActivity {
                 sessionManager.saveSession(currentSession);
             }
         }
-        updateAspectRatioBarVisibility();
     }
 
     private void loadLocalGeminiModels() {
@@ -1641,6 +1677,11 @@ public class MainActivity extends AppCompatActivity {
             toggleStarAnimation(false);
             addSystemMessage("🔴 Disconnected from Live Model");
             Toast.makeText(this, "Disconnected from Live Model", Toast.LENGTH_SHORT).show();
+            if (previousProviderBeforeLive != null) {
+                activeProvider = previousProviderBeforeLive;
+                prefs.edit().putString(AppConstants.KEY_ACTIVE_PROVIDER, activeProvider).apply();
+                previousProviderBeforeLive = null;
+            }
             return;
         }
 
@@ -1655,6 +1696,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        previousProviderBeforeLive = activeProvider;
         activeProvider = "Gemini";
         prefs.edit().putString(AppConstants.KEY_ACTIVE_PROVIDER, activeProvider).apply();
 
@@ -2213,6 +2255,16 @@ public class MainActivity extends AppCompatActivity {
                 super.onPageFinished(view, url);
                 view.evaluateJavascript(openerPolyfillScript, null);
                 CookieManager.getInstance().flush();
+
+                // Explicitly check for localStorage auth token
+                view.evaluateJavascript("(function(){ try { return localStorage.getItem('puter.auth.token'); } catch(e){ return null; } })()", value -> {
+                    if (value != null && !value.equals("null") && !value.isEmpty()) {
+                        String cleanToken = value.replace("\"", "").trim();
+                        if (!cleanToken.isEmpty()) {
+                            AuthManager.getInstance(MainActivity.this).setAuthToken(cleanToken);
+                        }
+                    }
+                });
 
                 String cookies = CookieManager.getInstance().getCookie("https://puter.com");
                 if (cookies != null && (cookies.contains("puter_auth=") || cookies.contains("token=") || cookies.contains("auth_token="))) {
