@@ -23,7 +23,7 @@ import org.json.JSONObject;
  */
 public class HeadlessAudioBridge {
     private static final String TAG = "HeadlessAudioBridge";
-    private static final String HEADLESS_ASSET_URL = "file:///android_asset/headless_live_audio.html";
+    private static final String HEADLESS_ASSET_URL = "https://appassets.androidplatform.net/assets/headless_live_audio.html";
 
     public interface LiveAudioEventListener {
         void onSessionConnected();
@@ -177,25 +177,40 @@ public class HeadlessAudioBridge {
 
     public void sendPuterChat(String messagesJson, String modelId, boolean isStream, String systemMessage, String aspectRatio) {
         mainHandler.post(() -> {
-            String messagesParam = messagesJson != null ? messagesJson : "[]";
+            String safeMessagesJson = messagesJson != null ? messagesJson : "[]";
+            String quotedMessagesJson = JSONObject.quote(safeMessagesJson);
             String modelEscaped = JSONObject.quote(modelId != null ? modelId : "gpt-4o-mini");
             String sysEscaped = systemMessage != null ? JSONObject.quote(systemMessage) : "\"\"";
             String aspectEscaped = aspectRatio != null ? JSONObject.quote(aspectRatio) : "\"\"";
 
             LiveLogManager.getInstance().process("PUTER_BRIDGE", "Dispatched to JS Engine",
-                    "Model: " + modelId + " | Payload chars: " + messagesParam.length());
+                    "Model: " + modelId + " | Payload chars: " + safeMessagesJson.length());
 
-            String js = String.format("if (typeof window.sendPuterChat === 'function') { window.sendPuterChat(%s, %s, %b, %s, %s); } else { 'MISSING_FUNCTION'; }",
-                    messagesParam, modelEscaped, isStream, sysEscaped, aspectEscaped);
+            // Safely parse JSON on JavaScript side to avoid syntax errors with newlines or quotes
+            String js = String.format(
+                    "try {" +
+                    "  if (typeof window.sendPuterChat === 'function') {" +
+                    "    window.sendPuterChat(JSON.parse(%s), %s, %b, %s, %s);" +
+                    "    'SCHEDULED';" +
+                    "  } else {" +
+                    "    'MISSING_FUNCTION';" +
+                    "  }" +
+                    "} catch(e) {" +
+                    "  'ERROR:' + e.message;" +
+                    "}",
+                    quotedMessagesJson, modelEscaped, isStream, sysEscaped, aspectEscaped);
 
             webView.evaluateJavascript(js, new ValueCallback<String>() {
                 @Override
                 public void onReceiveValue(String value) {
-                    if ("\"MISSING_FUNCTION\"".equals(value)) {
-                        LiveLogManager.getInstance().error("PUTER_BRIDGE", "JS Execution Failed", "window.sendPuterChat is not defined in headless HTML.");
-                        dispatchPuterError("Headless chat worker is still initializing. Please retry in a moment.");
+                    if (value == null || value.equals("null") || "\"MISSING_FUNCTION\"".equals(value)) {
+                        LiveLogManager.getInstance().error("PUTER_BRIDGE", "JS Function Missing", "window.sendPuterChat is not ready yet in headless WebView.");
+                        dispatchPuterError("Headless chat worker is still loading. Please try again in a moment.");
+                    } else if (value.contains("ERROR:")) {
+                        LiveLogManager.getInstance().error("PUTER_BRIDGE", "JS Evaluation Crash", value);
+                        dispatchPuterError("Chat dispatch error: " + value);
                     } else {
-                        LiveLogManager.getInstance().ok("PUTER_BRIDGE", "JS Scheduled", "Command received by browser JavaScript engine");
+                        LiveLogManager.getInstance().ok("PUTER_BRIDGE", "JS Confirmed", "Chat execution confirmed by browser engine");
                     }
                 }
             });
