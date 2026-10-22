@@ -441,13 +441,13 @@ function playAudioChunk(base64Pcm) {
 }
 
 // =========================================================================
-// PUTER.JS CLIENT-SIDE SDK INTEGRATION (EXACT OLD APP LOGIC + FULL TOKEN SYNC)
+// PUTER.JS CLIENT-SIDE SDK INTEGRATION (DEEP TELEMETRY & MULTI-LAYER RECOVERY)
 // =========================================================================
 
 /**
  * Pushes any discovered Puter token to Java native AuthManager and updates UI status.
  */
-function syncPuterTokenToNative(token) {
+function syncPuterTokenToNative(token, source) {
     if (!token || typeof token !== 'string' || token.trim().length === 0) return;
     const cleanToken = token.trim();
     const bridge = getBridge();
@@ -457,52 +457,82 @@ function syncPuterTokenToNative(token) {
     if (bridge && bridge.onAuthStatusChanged) {
         bridge.onAuthStatusChanged(true);
     }
-    sendLogToNative("OK", "PUTER_AUTH", "Token Synced to Native", "Token len: " + cleanToken.length);
+    sendLogToNative("OK", "PUTER_AUTH", "Token Synced to Native", `Source: ${source} | Length: ${cleanToken.length}`);
 }
 
 /**
- * Synchronizes the token into memory directly on puter.authToken and puter.auth.token.
+ * Multi-layer inspection: examines JS SDK runtime, browser LocalStorage, and Native Java Storage.
  */
 function ensurePuterAuth() {
     const bridge = getBridge();
     let token = "";
+    let source = "";
+
     try {
-        // 1. Check Puter SDK runtime instance first
+        // Layer 1: Check Puter SDK runtime instance in memory
         if (typeof puter !== 'undefined') {
             if (puter.authToken && typeof puter.authToken === 'string' && puter.authToken.length > 5) {
                 token = puter.authToken;
+                source = "puter.authToken (memory)";
             } else if (puter.auth && puter.auth.token && typeof puter.auth.token === 'string' && puter.auth.token.length > 5) {
                 token = puter.auth.token;
+                source = "puter.auth.token (SDK)";
             }
         }
 
-        // 2. Check LocalStorage
+        // Layer 2: Check LocalStorage
         if (!token || token.trim().length === 0) {
-            token = localStorage.getItem('puter.auth.token') || "";
+            const lsToken = localStorage.getItem('puter.auth.token') || localStorage.getItem('token');
+            if (lsToken && lsToken.trim().length > 5) {
+                token = lsToken;
+                source = "localStorage";
+            }
         }
 
-        // 3. Check Native Java AuthManager
-        if ((!token || token.trim().length === 0) && bridge && bridge.getSavedAuthToken) {
-            token = bridge.getSavedAuthToken() || "";
+        // Layer 3: Check Native Java AuthManager via Bridge
+        if (!token || token.trim().length === 0) {
+            if (bridge) {
+                if (bridge.getAuthToken) {
+                    const natToken = bridge.getAuthToken();
+                    if (natToken && natToken.trim().length > 5) {
+                        token = natToken;
+                        source = "Native AuthManager (getAuthToken)";
+                    }
+                }
+                if ((!token || token.trim().length === 0) && bridge.getSavedAuthToken) {
+                    const natToken = bridge.getSavedAuthToken();
+                    if (natToken && natToken.trim().length > 5) {
+                        token = natToken;
+                        source = "Native AuthManager (getSavedAuthToken)";
+                    }
+                }
+            }
         }
 
+        // If found anywhere, propagate to all layers
         if (token && token.trim().length > 0) {
             token = token.trim();
-            localStorage.setItem('puter.auth.token', token);
+            try { localStorage.setItem('puter.auth.token', token); } catch(e) {}
             if (typeof puter !== 'undefined') {
                 puter.authToken = token;
                 if (puter.auth) {
                     puter.auth.token = token;
                 }
             }
-            syncPuterTokenToNative(token);
-            sendLogToNative("INFO", "PUTER_AUTH", "Token Extracted", "Token length: " + token.length);
+            syncPuterTokenToNative(token, source);
+            sendLogToNative("OK", "PUTER_AUTH", "Token Resolved", `Source: ${source} | Characters: ${token.length}`);
             return token;
         }
+
     } catch(e) {
-        sendLogToNative("ERROR", "PUTER_AUTH", "Token Sync Failed", e.message);
+        sendLogToNative("ERROR", "PUTER_AUTH", "Token Resolution Exception", e.message || String(e));
     }
-    sendLogToNative("WARN", "PUTER_AUTH", "No Token Found", "Guest/Anonymous session active.");
+
+    // Detailed diagnostic breakdown of why no token was found
+    const diagDetails = `Checked: [SDK Memory: ${typeof puter !== 'undefined' && puter.authToken ? 'Present' : 'Empty'}, ` +
+                        `LocalStorage: ${localStorage.getItem('puter.auth.token') ? 'Present' : 'Empty'}, ` +
+                        `Native Bridge: ${bridge && bridge.getAuthToken && bridge.getAuthToken() ? 'Present' : 'Empty'}]`;
+    sendLogToNative("WARN", "PUTER_AUTH", "Token Missing Across All Layers", diagDetails);
     return null;
 }
 
@@ -528,13 +558,13 @@ window.checkAndBroadcastAuth = async function() {
                 if (!token && puter.auth.token) token = puter.auth.token;
 
                 if (token) {
-                    syncPuterTokenToNative(token);
+                    syncPuterTokenToNative(token, "puter.auth.getToken() on init");
                     return;
                 }
             }
         }
     } catch (e) {
-        sendLogToNative("WARN", "PUTER_AUTH", "Auth Broadcast Failed", e.message);
+        sendLogToNative("WARN", "PUTER_AUTH", "Auth Broadcast Warning", e.message || String(e));
     }
     ensurePuterAuth();
 };
@@ -614,16 +644,23 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
 
         if (!authToken && puter.auth) {
             let isSigned = false;
-            try { if (typeof puter.auth.isSignedIn === 'function') isSigned = await puter.auth.isSignedIn(); } catch(e){}
+            try { 
+                if (typeof puter.auth.isSignedIn === 'function') {
+                    isSigned = await puter.auth.isSignedIn();
+                }
+            } catch(e){}
             
             if (!isSigned) {
-                sendLogToNative("WARN", "PUTER_AUTH", "Guest Session Triggered", "Attempting temp user creation.");
+                sendLogToNative("PROCESS", "PUTER_AUTH", "Creating Temp User Session", "No token found. Attempting silent anonymous session creation...");
                 try {
                     await puter.auth.signIn({ attempt_temp_user_creation: true });
                     authToken = ensurePuterAuth();
+                    if (authToken) {
+                        sendLogToNative("OK", "PUTER_AUTH", "Temp User Session Created", `Token Length: ${authToken.length}`);
+                    }
                 } catch(authErr) {
                     clearTimeout(watchdogTimer);
-                    sendLogToNative("ERROR", "PUTER_AUTH", "Guest Auth Failed", authErr.message || String(authErr));
+                    sendLogToNative("ERROR", "PUTER_AUTH", "Temp User Creation Failed", authErr.message || String(authErr));
                     if (bridge && bridge.onPuterError) {
                         bridge.onPuterError("Please sign in to your Puter account from the top-right menu.");
                     }
