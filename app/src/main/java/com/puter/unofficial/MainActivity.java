@@ -65,10 +65,14 @@ import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
+import com.google.android.material.bottomsheet.BottomSheetBehavior;
 import com.google.android.material.bottomsheet.BottomSheetDialog;
 import com.puter.unofficial.adapters.ChatAdapter;
+import com.puter.unofficial.adapters.LogConsoleAdapter;
 import com.puter.unofficial.adapters.ModelAccordionAdapter;
 import com.puter.unofficial.adapters.StagedAttachmentsAdapter;
+import com.puter.unofficial.logging.LiveLogManager;
+import com.puter.unofficial.logging.LogEntry;
 import com.puter.unofficial.models.AIModelDefinition;
 import com.puter.unofficial.models.ChatMessage;
 import com.puter.unofficial.models.ChatSession;
@@ -90,10 +94,9 @@ import java.util.Map;
 
 /**
  * 100% Pure Native Android Java Activity for Puter Unofficial.
- * Routes Puter models through background Puter SDK web worker (identical to Puter11)
- * and standalone Gemini models to Google Generative Language API.
+ * Includes floating draggable system log console for deep telemetry interception.
  */
-public class MainActivity extends AppCompatActivity {
+public class MainActivity extends AppCompatActivity implements LiveLogManager.LogEventListener {
 
     private static final String TAG = "MainActivity";
 
@@ -157,6 +160,12 @@ public class MainActivity extends AppCompatActivity {
     private TextView ctxToggleProvider;
     private TextView ctxEndSession;
     private ChatMessage contextTargetMessage;
+
+    // Floating Diagnostic Log Console
+    private View floatingLogView;
+    private TextView tvFloatingLogBadge;
+    private float dX, dY;
+    private float initialTouchX, initialTouchY;
 
     // Headless WebView & Live Voice Overlay HUD
     private WebView headlessAudioWebView;
@@ -224,6 +233,9 @@ public class MainActivity extends AppCompatActivity {
         setupOutsideTouchDismissal();
         loadInitialSession();
 
+        attachFloatingLogBadge();
+        LiveLogManager.getInstance(this).addListener(this);
+
         checkAndRequestPermissions();
     }
 
@@ -290,6 +302,178 @@ public class MainActivity extends AppCompatActivity {
 
         setupAspectRatioSpinner();
     }
+
+    // --- FLOATING DIAGNOSTIC LOG CONSOLE SYSTEM ---
+
+    @SuppressLint("ClickableViewAccessibility")
+    private void attachFloatingLogBadge() {
+        if (chatRootLayout == null) return;
+
+        floatingLogView = LayoutInflater.from(this).inflate(R.layout.view_floating_log_badge, chatRootLayout, false);
+        tvFloatingLogBadge = floatingLogView.findViewById(R.id.tvFloatingLogBadge);
+
+        CoordinatorLayout.LayoutParams lp = new CoordinatorLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        
+        DisplayMetrics dm = getResources().getDisplayMetrics();
+        int marginX = (int) (16 * dm.density);
+        int marginY = (int) (80 * dm.density);
+
+        lp.leftMargin = dm.widthPixels - marginX - (int)(68 * dm.density);
+        lp.topMargin = dm.heightPixels - marginY - (int)(68 * dm.density);
+        chatRootLayout.addView(floatingLogView, lp);
+
+        CardView cvBtn = floatingLogView.findViewById(R.id.cvFloatingLogBtn);
+        cvBtn.setOnTouchListener((v, event) -> {
+            switch (event.getActionMasked()) {
+                case MotionEvent.ACTION_DOWN:
+                    dX = floatingLogView.getX() - event.getRawX();
+                    dY = floatingLogView.getY() - event.getRawY();
+                    initialTouchX = event.getRawX();
+                    initialTouchY = event.getRawY();
+                    v.animate().scaleX(0.9f).scaleY(0.9f).setDuration(100).start();
+                    return true;
+
+                case MotionEvent.ACTION_MOVE:
+                    float newX = event.getRawX() + dX;
+                    float newY = event.getRawY() + dY;
+                    floatingLogView.setX(newX);
+                    floatingLogView.setY(newY);
+                    return true;
+
+                case MotionEvent.ACTION_UP:
+                    v.animate().scaleX(1f).scaleY(1f).setDuration(100).start();
+                    float deltaX = Math.abs(event.getRawX() - initialTouchX);
+                    float deltaY = Math.abs(event.getRawY() - initialTouchY);
+                    if (deltaX < 10 && deltaY < 10) {
+                        openSystemLogConsole();
+                    }
+                    return true;
+            }
+            return false;
+        });
+
+        // Initialize UI State
+        LiveLogManager logger = LiveLogManager.getInstance(this);
+        onNewLogEntry(null, logger.getTotalCount(), logger.getErrorCount());
+    }
+
+    @Override
+    public void onNewLogEntry(LogEntry entry, int totalCount, int errorCount) {
+        if (tvFloatingLogBadge != null) {
+            tvFloatingLogBadge.setVisibility(totalCount > 0 ? View.VISIBLE : View.GONE);
+            tvFloatingLogBadge.setText(String.valueOf(totalCount));
+            if (errorCount > 0) {
+                tvFloatingLogBadge.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.parseColor("#D50000")));
+            } else {
+                tvFloatingLogBadge.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.parseColor("#7C4DFF")));
+            }
+        }
+    }
+
+    @Override
+    public void onLogsCleared() {
+        if (tvFloatingLogBadge != null) {
+            tvFloatingLogBadge.setVisibility(View.GONE);
+        }
+    }
+
+    private void openSystemLogConsole() {
+        BottomSheetDialog dialog = new BottomSheetDialog(this, R.style.BottomSheetDialogTheme);
+        dialog.getBehavior().setState(BottomSheetBehavior.STATE_EXPANDED);
+        dialog.getBehavior().setSkipCollapsed(true);
+        
+        View sheet = LayoutInflater.from(this).inflate(R.layout.dialog_system_log_console, null);
+        
+        ImageView btnMinimize = sheet.findViewById(R.id.btnMinimizeConsole);
+        EditText etSearch = sheet.findViewById(R.id.etLogSearch);
+        ImageView btnClearSearch = sheet.findViewById(R.id.btnClearSearch);
+        RecyclerView rvConsole = sheet.findViewById(R.id.rvLogConsole);
+        TextView tvSummary = sheet.findViewById(R.id.tvLogCountSummary);
+        TextView btnClearAll = sheet.findViewById(R.id.btnClearAllLogs);
+        LinearLayout llEmpty = sheet.findViewById(R.id.llEmptyLogsState);
+
+        TextView chipAll = sheet.findViewById(R.id.chipFilterAll);
+        TextView chipErrors = sheet.findViewById(R.id.chipFilterErrors);
+        TextView chipCrashes = sheet.findViewById(R.id.chipFilterCrashes);
+        TextView chipProcess = sheet.findViewById(R.id.chipFilterProcess);
+        TextView chipPuter = sheet.findViewById(R.id.chipFilterPuter);
+        TextView chipGemini = sheet.findViewById(R.id.chipFilterGemini);
+        TextView chipAuth = sheet.findViewById(R.id.chipFilterAuth);
+
+        TextView[] allChips = {chipAll, chipErrors, chipCrashes, chipProcess, chipPuter, chipGemini, chipAuth};
+
+        LogConsoleAdapter consoleAdapter = new LogConsoleAdapter();
+        rvConsole.setLayoutManager(new LinearLayoutManager(this));
+        rvConsole.setAdapter(consoleAdapter);
+
+        Runnable refreshUI = () -> {
+            int displayed = consoleAdapter.getItemCount();
+            int total = consoleAdapter.getMasterCount();
+            tvSummary.setText("Showing " + displayed + " of " + total + " total logs");
+            llEmpty.setVisibility(displayed == 0 ? View.VISIBLE : View.GONE);
+        };
+
+        LiveLogManager logger = LiveLogManager.getInstance(this);
+        consoleAdapter.setLogs(logger.getAllLogs());
+        refreshUI.run();
+
+        // Register local listener to update this open dialog in real-time
+        LiveLogManager.LogEventListener dialogListener = new LiveLogManager.LogEventListener() {
+            @Override
+            public void onNewLogEntry(LogEntry entry, int totalCount, int errorCount) {
+                runOnUiThread(() -> {
+                    consoleAdapter.addEntry(entry);
+                    refreshUI.run();
+                });
+            }
+            @Override
+            public void onLogsCleared() {
+                runOnUiThread(() -> {
+                    consoleAdapter.clearLogs();
+                    refreshUI.run();
+                });
+            }
+        };
+        logger.addListener(dialogListener);
+        dialog.setOnDismissListener(d -> logger.removeListener(dialogListener));
+
+        btnMinimize.setOnClickListener(v -> dialog.dismiss());
+        btnClearAll.setOnClickListener(v -> logger.clearLogs());
+
+        etSearch.addTextChangedListener(new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+                btnClearSearch.setVisibility(s.length() > 0 ? View.VISIBLE : View.GONE);
+                consoleAdapter.setFilterQuery(s.toString());
+                refreshUI.run();
+            }
+            @Override public void afterTextChanged(Editable s) {}
+        });
+
+        btnClearSearch.setOnClickListener(v -> etSearch.setText(""));
+
+        View.OnClickListener chipClickListener = v -> {
+            for (TextView chip : allChips) {
+                chip.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.parseColor("#181C2B")));
+                chip.setTextColor(Color.parseColor("#8C95AB"));
+            }
+            v.setBackgroundTintList(android.content.res.ColorStateList.valueOf(Color.parseColor("#7C4DFF")));
+            ((TextView)v).setTextColor(Color.WHITE);
+
+            String cat = ((TextView)v).getText().toString();
+            consoleAdapter.setCategoryFilter(cat);
+            refreshUI.run();
+        };
+
+        for (TextView chip : allChips) {
+            chip.setOnClickListener(chipClickListener);
+        }
+
+        dialog.setContentView(sheet);
+        dialog.show();
+    }
+
 
     private void setupAspectRatioSpinner() {
         if (spnAspectRatio == null) return;
@@ -2568,4 +2752,3 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 }
-
