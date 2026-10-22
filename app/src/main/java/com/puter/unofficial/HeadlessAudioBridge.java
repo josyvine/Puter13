@@ -5,6 +5,7 @@ import android.content.Context;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.webkit.CookieManager;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -72,9 +73,16 @@ public class HeadlessAudioBridge {
         WebSettings settings = webView.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(true);
+        settings.setDatabaseEnabled(true);
         settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(true);
         settings.setAllowContentAccess(true);
+
+        String userAgent = settings.getUserAgentString().replace("; wv", "");
+        settings.setUserAgentString(userAgent);
+
+        CookieManager.getInstance().setAcceptCookie(true);
+        CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
 
         // Grant WebRTC microphone capture permission automatically to avoid silent getUserMedia drop
         webView.setWebChromeClient(new WebChromeClient() {
@@ -89,6 +97,39 @@ public class HeadlessAudioBridge {
         });
 
         webView.loadUrl(HEADLESS_ASSET_URL);
+    }
+
+    // --- PUTER TOKEN AND AUTH SYNCHRONIZATION ---
+
+    /**
+     * Triggers the headless JavaScript SDK to inspect its session and push tokens to Java AuthManager.
+     */
+    public void syncPuterAuth() {
+        mainHandler.post(() -> {
+            Log.d(TAG, "Triggering syncPuterAuth in headless worker");
+            webView.evaluateJavascript("if (typeof window.checkAndBroadcastAuth === 'function') { window.checkAndBroadcastAuth(); }", null);
+        });
+    }
+
+    /**
+     * Injects a token from native storage into the headless worker's localStorage and SDK runtime.
+     */
+    public void injectPuterToken(String token) {
+        if (token == null || token.trim().isEmpty()) return;
+        mainHandler.post(() -> {
+            String tokenEscaped = JSONObject.quote(token.trim());
+            String js = String.format(
+                "(function() {" +
+                "  try {" +
+                "    localStorage.setItem('puter.auth.token', %s);" +
+                "    if (typeof puter !== 'undefined') {" +
+                "      puter.authToken = %s;" +
+                "      if (puter.auth) { puter.auth.token = %s; }" +
+                "    }" +
+                "  } catch(e) {}" +
+                "})();", tokenEscaped, tokenEscaped, tokenEscaped);
+            webView.evaluateJavascript(js, null);
+        });
     }
 
     // --- GEMINI LIVE COMMENTARY CONTROLS ---
