@@ -520,7 +520,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
-                syncPuterTokenToHeadless();
+                syncPuterTokenToHeadless(false);
             }
         });
         headlessAudioWebView.setWebChromeClient(new MyWebChromeClient(this));
@@ -562,14 +562,17 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
     /**
      * Injects the active Puter authentication token directly into localStorage
      * and into the in-memory puter SDK instance (puter.authToken and puter.auth.token).
-     * Guarded with lastInjectedPuterToken to permanently prevent recursion ping-pong bloat.
      */
     public void syncPuterTokenToHeadless() {
+        syncPuterTokenToHeadless(false);
+    }
+
+    public void syncPuterTokenToHeadless(boolean force) {
         if (headlessAudioWebView == null) return;
         String token = AuthManager.getInstance(this).getAuthToken();
         if (token != null && !token.trim().isEmpty()) {
             String clean = token.trim();
-            if (clean.equals(lastInjectedPuterToken)) {
+            if (!force && clean.equals(lastInjectedPuterToken)) {
                 return; // Token already synchronized, abort loop completely
             }
             lastInjectedPuterToken = clean;
@@ -583,7 +586,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                         "  } " +
                         "} catch(e) {}";
             headlessAudioWebView.evaluateJavascript(js, null);
-            LiveLogManager.getInstance().ok("PUTER_AUTH", "Token Injected to Headless", "Length: " + clean.length() + " chars");
+            LiveLogManager.getInstance().ok("PUTER_AUTH", "Token Injected to Headless", "Length: " + clean.length() + " chars (forced: " + force + ")");
         } else {
             if (lastInjectedPuterToken != null) {
                 lastInjectedPuterToken = null;
@@ -1310,11 +1313,13 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
 
     /**
      * Executes Puter multi-model chat or image generation via the headless Puter SDK worker.
-     * Logs deep Java-side dispatch state and active network status.
+     * Guarantees token injection directly before dispatching.
      */
     private void dispatchPuterGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
         currentActiveAssistantMsg = assistantMsg;
-        syncPuterTokenToHeadless();
+        
+        // Force sync token right now to ensure headless context has the token before dispatch
+        syncPuterTokenToHeadless(true);
 
         // Audit device network connection
         boolean isConnected = false;
@@ -1605,7 +1610,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
 
                 if (AuthManager.getInstance(this).isLoggedIn()) {
                     Toast.makeText(this, "Syncing live models...", Toast.LENGTH_SHORT).show();
-                    syncPuterTokenToHeadless();
+                    syncPuterTokenToHeadless(false);
                     if (headlessAudioBridge != null) {
                         headlessAudioBridge.fetchPuterLiveModels();
                     }
@@ -2098,7 +2103,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
 
     private void showSettingsHubDialog() {
         BottomSheetDialog dialog = new BottomSheetDialog(this, R.style.BottomSheetDialogTheme);
-        View sheet = LayoutInflater.from(this).inflate(R.layout.dialog_settings_hub, null);
+        View sheet = LayoutInflater.from(this, null).inflate(R.layout.dialog_settings_hub, null);
 
         sheet.findViewById(R.id.btnHubCustomInstruction).setOnClickListener(v -> {
             dialog.dismiss();
@@ -2495,7 +2500,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                     String clean = token.replace("\"", "").replace("'", "").trim();
                     LiveLogManager.getInstance().ok("PUTER_AUTH", "Token via JS Bridge", "Token len: " + clean.length());
                     AuthManager.getInstance(MainActivity.this).saveAuthToken(clean);
-                    syncPuterTokenToHeadless();
+                    syncPuterTokenToHeadless(true);
                     runOnUiThread(() -> completePuterAuth());
                 }
             }
@@ -2617,7 +2622,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                             if (!val.isEmpty()) {
                                 LiveLogManager.getInstance().ok("PUTER_AUTH", "Token Discovered in Cookies", "Key [" + key + "] len: " + val.length());
                                 AuthManager.getInstance(MainActivity.this).saveAuthToken(val);
-                                syncPuterTokenToHeadless();
+                                syncPuterTokenToHeadless(true);
                                 if (finalizeOnFound) {
                                     completePuterAuth();
                                     return;
@@ -2650,7 +2655,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                 if (!clean.isEmpty()) {
                     LiveLogManager.getInstance().ok("PUTER_AUTH", "Token Extracted from LocalStorage", "Len: " + clean.length());
                     AuthManager.getInstance(MainActivity.this).saveAuthToken(clean);
-                    syncPuterTokenToHeadless();
+                    syncPuterTokenToHeadless(true);
                     if (finalizeOnFound) {
                         completePuterAuth();
                     }
@@ -2687,7 +2692,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                 puterAuthDialog = null;
             }
             refreshDropdownUI();
-            syncPuterTokenToHeadless();
+            syncPuterTokenToHeadless(true);
             Toast.makeText(MainActivity.this, "Puter Sign-In Successful!", Toast.LENGTH_SHORT).show();
             if (isLiveMode) {
                 loadModels();
@@ -2780,7 +2785,6 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
 
     public void reloadWebView() {
         runOnUiThread(this::refreshDropdownUI);
-        // Note: Do not reload headlessAudioWebView here as it destroys ongoing JS network calls and restarts the auth sync cycle
     }
 
     @Override
