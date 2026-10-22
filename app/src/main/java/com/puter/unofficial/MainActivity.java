@@ -418,7 +418,6 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         consoleAdapter.setLogs(logger.getAllLogs());
         refreshUI.run();
 
-        // Register local listener to update this open dialog in real-time
         LiveLogManager.LogEventListener dialogListener = new LiveLogManager.LogEventListener() {
             @Override
             public void onNewLogEntry(LogEntry entry, int totalCount, int errorCount) {
@@ -473,7 +472,6 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         dialog.setContentView(sheet);
         dialog.show();
     }
-
 
     private void setupAspectRatioSpinner() {
         if (spnAspectRatio == null) return;
@@ -571,6 +569,9 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                         "  } " +
                         "} catch(e) {}";
             headlessAudioWebView.evaluateJavascript(js, null);
+            LiveLogManager.getInstance().ok("PUTER_AUTH", "Token Injected to Headless", "Length: " + token.length() + " chars");
+        } else {
+            LiveLogManager.getInstance().warn("PUTER_AUTH", "Token Missing in Native Storage", "AuthManager returned empty/null token during headless sync.");
         }
     }
 
@@ -1250,10 +1251,6 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         }
     }
 
-    /**
-     * Determines if the model is handled directly by Google Gemini API.
-     * Evaluates provider setting and excludes OpenRouter/Together-AI models.
-     */
     private boolean isGeminiNativeModel(String modelId) {
         if (modelId == null) return false;
         String lower = modelId.toLowerCase(Locale.US);
@@ -1294,10 +1291,6 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         return text;
     }
 
-    /**
-     * Executes Puter multi-model chat or image generation via the headless Puter SDK worker.
-     * Injects the active auth token before sending so the SDK never stalls on auth popups.
-     */
     private void dispatchPuterGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
         currentActiveAssistantMsg = assistantMsg;
         syncPuterTokenToHeadless();
@@ -1533,7 +1526,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         rvChatTimeline.scrollToPosition(Math.max(0, chatAdapter.getItemCount() - 1));
     }
 
-    // --- MODEL ACCORDION & TAXONOMY (FULL PARITY WITH PUTER11) ---
+    // --- MODEL ACCORDION & TAXONOMY ---
 
     private void loadModels() {
         allModelsList.clear();
@@ -2380,18 +2373,21 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         });
     }
 
-    // --- PUTER AUTHENTICATION POPUP WITH AUTO-DISMISS & LOCALSTORAGE TOKEN EXTRACTION ---
+    // --- PUTER AUTHENTICATION POPUP WITH DEEP TELEMETRY & TOKEN EXTRACTION ---
 
     private void toggleAuthMirror() {
         boolean loggedIn = AuthManager.getInstance(this).isLoggedIn();
         if (loggedIn) {
+            LiveLogManager.getInstance().process("PUTER_AUTH", "User Triggered Sign Out", "Purging credentials and session cache.");
             AuthManager.getInstance(this).logout();
             refreshDropdownUI();
             Toast.makeText(this, "Signed Out", Toast.LENGTH_SHORT).show();
             if (headlessAudioWebView != null) {
                 headlessAudioWebView.evaluateJavascript("try { localStorage.removeItem('puter.auth.token'); } catch(e){}; if (typeof puter !== 'undefined') { puter.authToken = null; if (puter.auth) puter.auth.signOut(); }", null);
             }
+            LiveLogManager.getInstance().ok("PUTER_AUTH", "Sign Out Complete", "Puter token cleared from AuthManager and headless storage.");
         } else {
+            LiveLogManager.getInstance().process("PUTER_AUTH", "Sign In Selected", "Launching OAuth Popup window.");
             openPuterAuthDialog();
         }
     }
@@ -2414,18 +2410,9 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         closeButton.setBackgroundColor(Color.parseColor("#1a73e8"));
         closeButton.setTextColor(Color.WHITE);
         closeButton.setOnClickListener(v -> {
+            LiveLogManager.getInstance().warn("PUTER_AUTH", "Manual Window Close", "User tapped Close Button. Inspecting storage for token...");
             CookieManager.getInstance().flush();
-            // Force extraction of token from popup localStorage before closing dialog
-            popupWebView.evaluateJavascript("(function(){ try { return localStorage.getItem('puter.auth.token'); } catch(e){ return null; } })()", tokenVal -> {
-                if (tokenVal != null && !tokenVal.equals("null") && !tokenVal.trim().isEmpty()) {
-                    String cleanToken = tokenVal.replace("\"", "").replace("'", "").trim();
-                    if (!cleanToken.isEmpty()) {
-                        AuthManager.getInstance(MainActivity.this).setAuthToken(cleanToken);
-                        syncPuterTokenToHeadless();
-                    }
-                }
-                completePuterAuth();
-            });
+            extractTokensFromWebView(popupWebView, true);
         });
 
         dialogLayout.addView(closeButton, new LinearLayout.LayoutParams(
@@ -2452,15 +2439,16 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         popupWebView.addJavascriptInterface(new Object() {
             @JavascriptInterface
             public void onAuthMessageReceived(String rawData) {
-                Log.d(TAG, "Puter Auth postMessage received via JS: " + rawData);
-                runOnUiThread(() -> completePuterAuth());
+                LiveLogManager.getInstance().ok("PUTER_AUTH", "PostMessage Captured", "Raw: " + rawData);
+                runOnUiThread(() -> extractTokensFromWebView(popupWebView, true));
             }
 
             @JavascriptInterface
             public void onTokenExtracted(String token) {
                 if (token != null && !token.trim().isEmpty()) {
-                    Log.d(TAG, "Puter Token extracted from localStorage: " + token);
-                    AuthManager.getInstance(MainActivity.this).setAuthToken(token);
+                    String clean = token.replace("\"", "").replace("'", "").trim();
+                    LiveLogManager.getInstance().ok("PUTER_AUTH", "Token via JS Bridge", "Token len: " + clean.length());
+                    AuthManager.getInstance(MainActivity.this).saveAuthToken(clean);
                     syncPuterTokenToHeadless();
                     runOnUiThread(() -> completePuterAuth());
                 }
@@ -2470,8 +2458,8 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         popupWebView.setWebChromeClient(new WebChromeClient() {
             @Override
             public void onCloseWindow(WebView window) {
-                Log.d(TAG, "Puter SDK issued window.close() command");
-                runOnUiThread(() -> completePuterAuth());
+                LiveLogManager.getInstance().ok("PUTER_AUTH", "SDK Issued window.close()", "Finalizing auth extraction.");
+                runOnUiThread(() -> extractTokensFromWebView(popupWebView, true));
             }
         });
 
@@ -2480,7 +2468,6 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                 "  if (!window.opener) {" +
                 "    window.opener = {" +
                 "      postMessage: function(data, origin) {" +
-                "        console.log('Puter polyfill postMessage:', data);" +
                 "        if (window.AndroidPuterAuthBridge) {" +
                 "          window.AndroidPuterAuthBridge.onAuthMessageReceived(typeof data === 'object' ? JSON.stringify(data) : String(data));" +
                 "        }" +
@@ -2488,7 +2475,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                 "    };" +
                 "  }" +
                 "  try {" +
-                "    var token = localStorage.getItem('puter.auth.token');" +
+                "    var token = localStorage.getItem('puter.auth.token') || (typeof puter !== 'undefined' && puter.authToken);" +
                 "    if (token && window.AndroidPuterAuthBridge) {" +
                 "      window.AndroidPuterAuthBridge.onTokenExtracted(token);" +
                 "    }" +
@@ -2499,60 +2486,42 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 super.onPageStarted(view, url, favicon);
+                LiveLogManager.getInstance().process("PUTER_AUTH", "OAuth Page Loading", "URL: " + url);
                 view.evaluateJavascript(openerPolyfillScript, null);
-                checkAuthRedirect(url);
+                checkAuthRedirect(url, view);
             }
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 if (request != null && request.getUrl() != null) {
-                    return checkAuthRedirect(request.getUrl().toString());
+                    return checkAuthRedirect(request.getUrl().toString(), view);
                 }
                 return false;
             }
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                return checkAuthRedirect(url);
+                return checkAuthRedirect(url, view);
             }
 
             @Override
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
+                LiveLogManager.getInstance().ok("PUTER_AUTH", "OAuth Page Finished", "URL: " + url);
                 view.evaluateJavascript(openerPolyfillScript, null);
                 CookieManager.getInstance().flush();
 
-                view.evaluateJavascript("(function(){ try { return localStorage.getItem('puter.auth.token'); } catch(e){ return null; } })()", value -> {
-                    if (value != null && !value.equals("null") && !value.isEmpty()) {
-                        String cleanToken = value.replace("\"", "").replace("'", "").trim();
-                        if (!cleanToken.isEmpty()) {
-                            AuthManager.getInstance(MainActivity.this).setAuthToken(cleanToken);
-                            syncPuterTokenToHeadless();
-                        }
-                    }
-                });
-
-                String cookies = CookieManager.getInstance().getCookie("https://puter.com");
-                if (cookies != null && (cookies.contains("puter_auth=") || cookies.contains("token=") || cookies.contains("auth_token="))) {
-                    checkAuthRedirect(url != null ? url : "https://puter.com/app");
-                } else {
-                    checkAuthRedirect(url);
-                }
+                extractTokensFromWebView(view, false);
+                checkAuthRedirect(url, view);
             }
 
-            @Override
-            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
-                super.doUpdateVisitedHistory(view, url, isReload);
-                view.evaluateJavascript(openerPolyfillScript, null);
-                checkAuthRedirect(url);
-            }
-
-            private boolean checkAuthRedirect(String url) {
+            private boolean checkAuthRedirect(String url, WebView view) {
                 if (url == null || isPuterAuthProcessing) return false;
                 AuthManager auth = AuthManager.getInstance(MainActivity.this);
                 if (auth.isAuthCallback(url)) {
                     isPuterAuthProcessing = true;
-                    completePuterAuth();
+                    LiveLogManager.getInstance().ok("PUTER_AUTH", "Callback Detected", "Callback URL matched: " + url);
+                    extractTokensFromWebView(view, true);
                     return true;
                 }
                 return false;
@@ -2570,6 +2539,84 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         popupWebView.loadUrl(sdkAuthUrl, headers);
     }
 
+    /**
+     * Inspects localStorage, Puter JS runtime, and WebKit cookies for session credentials.
+     */
+    private void extractTokensFromWebView(WebView webView, boolean finalizeOnFound) {
+        if (webView == null) return;
+
+        // 1. Check WebKit Cookies on puter.com
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            String cookies = cm.getCookie("https://puter.com");
+            if (cookies == null || cookies.isEmpty()) {
+                cookies = cm.getCookie("https://api.puter.com");
+            }
+            if (cookies != null && !cookies.isEmpty()) {
+                String[] cookieList = cookies.split(";");
+                List<String> foundKeys = new ArrayList<>();
+                for (String c : cookieList) {
+                    String[] kv = c.trim().split("=");
+                    if (kv.length >= 2) {
+                        String key = kv[0].trim();
+                        String val = kv[1].trim();
+                        foundKeys.add(key);
+
+                        if (key.equalsIgnoreCase("token") ||
+                            key.equalsIgnoreCase("puter_auth_token") ||
+                            key.equalsIgnoreCase("puter_token") ||
+                            key.equalsIgnoreCase("auth_token") ||
+                            key.equalsIgnoreCase("puter-auth")) {
+
+                            if (!val.isEmpty()) {
+                                LiveLogManager.getInstance().ok("PUTER_AUTH", "Token Discovered in Cookies", "Key [" + key + "] len: " + val.length());
+                                AuthManager.getInstance(MainActivity.this).saveAuthToken(val);
+                                syncPuterTokenToHeadless();
+                                if (finalizeOnFound) {
+                                    completePuterAuth();
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+                LiveLogManager.getInstance().info("PUTER_AUTH", "Cookies Scanned", "Keys: " + foundKeys);
+            } else {
+                LiveLogManager.getInstance().warn("PUTER_AUTH", "Cookie Jar Empty", "CookieManager returned null/empty for puter.com");
+            }
+        } catch (Exception e) {
+            LiveLogManager.getInstance().error("PUTER_AUTH", "Cookie Scan Error", e.getMessage());
+        }
+
+        // 2. Query localStorage directly via JavaScript
+        String jsQuery = "(function(){" +
+                "  var t = '';" +
+                "  try { t = localStorage.getItem('puter.auth.token') || localStorage.getItem('token') || ''; } catch(e){}" +
+                "  if (!t && typeof puter !== 'undefined') {" +
+                "    t = puter.authToken || (puter.auth && puter.auth.token) || '';" +
+                "  }" +
+                "  return t;" +
+                "})()";
+
+        webView.evaluateJavascript(jsQuery, val -> {
+            if (val != null && !val.equals("null") && !val.trim().isEmpty()) {
+                String clean = val.replace("\"", "").replace("'", "").trim();
+                if (!clean.isEmpty()) {
+                    LiveLogManager.getInstance().ok("PUTER_AUTH", "Token Extracted from LocalStorage", "Len: " + clean.length());
+                    AuthManager.getInstance(MainActivity.this).saveAuthToken(clean);
+                    syncPuterTokenToHeadless();
+                    if (finalizeOnFound) {
+                        completePuterAuth();
+                    }
+                    return;
+                }
+            }
+            if (finalizeOnFound) {
+                completePuterAuth();
+            }
+        });
+    }
+
     private void completePuterAuth() {
         if (isPuterAuthProcessing && puterAuthDialog == null) return;
         isPuterAuthProcessing = true;
@@ -2578,6 +2625,13 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         AuthManager auth = AuthManager.getInstance(MainActivity.this);
         auth.handleAuthCallback("https://puter.com/app");
         auth.setLoggedIn(true);
+
+        String currentToken = auth.getAuthToken();
+        if (currentToken != null && !currentToken.trim().isEmpty()) {
+            LiveLogManager.getInstance().ok("PUTER_AUTH", "Authentication Verified", "Token active in AuthManager (length: " + currentToken.length() + ")");
+        } else {
+            LiveLogManager.getInstance().warn("PUTER_AUTH", "Login Finished Without Token", "Session marked logged-in, but token remains empty.");
+        }
 
         runOnUiThread(() -> {
             if (puterAuthDialog != null && puterAuthDialog.isShowing()) {
@@ -2752,3 +2806,4 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         }
     }
 }
+
