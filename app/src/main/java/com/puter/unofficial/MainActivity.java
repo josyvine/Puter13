@@ -371,15 +371,21 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Injects the active Puter authentication token into the background WebView's localStorage.
-     * Prevents puter.js from freezing on interactive auth popups.
+     * Injects the active Puter authentication token directly into localStorage
+     * and into the in-memory puter SDK instance (puter.authToken and puter.auth.token).
      */
     public void syncPuterTokenToHeadless() {
         if (headlessAudioWebView == null) return;
         String token = AuthManager.getInstance(this).getAuthToken();
         if (token != null && !token.trim().isEmpty()) {
             String safeToken = token.replace("'", "\\'");
-            String js = "try { localStorage.setItem('puter.auth.token', '" + safeToken + "'); } catch(e) {}";
+            String js = "try { " +
+                        "  localStorage.setItem('puter.auth.token', '" + safeToken + "'); " +
+                        "  if (typeof puter !== 'undefined') { " +
+                        "    puter.authToken = '" + safeToken + "'; " +
+                        "    if (puter.auth) { puter.auth.token = '" + safeToken + "'; } " +
+                        "  } " +
+                        "} catch(e) {}";
             headlessAudioWebView.evaluateJavascript(js, null);
         }
     }
@@ -2199,7 +2205,7 @@ public class MainActivity extends AppCompatActivity {
             refreshDropdownUI();
             Toast.makeText(this, "Signed Out", Toast.LENGTH_SHORT).show();
             if (headlessAudioWebView != null) {
-                headlessAudioWebView.evaluateJavascript("try { localStorage.removeItem('puter.auth.token'); } catch(e){}; if (typeof puter !== 'undefined' && puter.auth) { puter.auth.signOut(); }", null);
+                headlessAudioWebView.evaluateJavascript("try { localStorage.removeItem('puter.auth.token'); } catch(e){}; if (typeof puter !== 'undefined') { puter.authToken = null; if (puter.auth) puter.auth.signOut(); }", null);
             }
         } else {
             openPuterAuthDialog();
@@ -2217,20 +2223,31 @@ public class MainActivity extends AppCompatActivity {
         dialogLayout.setOrientation(LinearLayout.VERTICAL);
         dialogLayout.setBackgroundColor(Color.WHITE);
 
+        final WebView popupWebView = new WebView(this);
+
         Button closeButton = new Button(this);
         closeButton.setText("Close Window (Tap when Signed In)");
         closeButton.setBackgroundColor(Color.parseColor("#1a73e8"));
         closeButton.setTextColor(Color.WHITE);
         closeButton.setOnClickListener(v -> {
             CookieManager.getInstance().flush();
-            completePuterAuth();
+            // Force extraction of token from popup localStorage before closing dialog
+            popupWebView.evaluateJavascript("(function(){ try { return localStorage.getItem('puter.auth.token'); } catch(e){ return null; } })()", tokenVal -> {
+                if (tokenVal != null && !tokenVal.equals("null") && !tokenVal.trim().isEmpty()) {
+                    String cleanToken = tokenVal.replace("\"", "").replace("'", "").trim();
+                    if (!cleanToken.isEmpty()) {
+                        AuthManager.getInstance(MainActivity.this).setAuthToken(cleanToken);
+                        syncPuterTokenToHeadless();
+                    }
+                }
+                completePuterAuth();
+            });
         });
 
         dialogLayout.addView(closeButton, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 
                 ViewGroup.LayoutParams.WRAP_CONTENT));
 
-        final WebView popupWebView = new WebView(this);
         dialogLayout.addView(popupWebView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 
                 ViewGroup.LayoutParams.MATCH_PARENT));
@@ -2321,10 +2338,9 @@ public class MainActivity extends AppCompatActivity {
                 view.evaluateJavascript(openerPolyfillScript, null);
                 CookieManager.getInstance().flush();
 
-                // Explicitly check for localStorage auth token
                 view.evaluateJavascript("(function(){ try { return localStorage.getItem('puter.auth.token'); } catch(e){ return null; } })()", value -> {
                     if (value != null && !value.equals("null") && !value.isEmpty()) {
-                        String cleanToken = value.replace("\"", "").trim();
+                        String cleanToken = value.replace("\"", "").replace("'", "").trim();
                         if (!cleanToken.isEmpty()) {
                             AuthManager.getInstance(MainActivity.this).setAuthToken(cleanToken);
                             syncPuterTokenToHeadless();
@@ -2389,7 +2405,6 @@ public class MainActivity extends AppCompatActivity {
             refreshDropdownUI();
             syncPuterTokenToHeadless();
             Toast.makeText(MainActivity.this, "Puter Sign-In Successful!", Toast.LENGTH_SHORT).show();
-            // Automatically fetch live models if in live mode
             if (isLiveMode) {
                 loadModels();
             }
@@ -2424,7 +2439,7 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
-        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNISpeech);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
         intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault());
         intent.putExtra(RecognizerIntent.EXTRA_PROMPT, "Speak to Puter...");
