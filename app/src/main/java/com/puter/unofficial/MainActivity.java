@@ -2103,7 +2103,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
 
     private void showSettingsHubDialog() {
         BottomSheetDialog dialog = new BottomSheetDialog(this, R.style.BottomSheetDialogTheme);
-        View sheet = LayoutInflater.from(this, null).inflate(R.layout.dialog_settings_hub, null);
+        View sheet = LayoutInflater.from(this).inflate(R.layout.dialog_settings_hub, null);
 
         sheet.findViewById(R.id.btnHubCustomInstruction).setOnClickListener(v -> {
             dialog.dismiss();
