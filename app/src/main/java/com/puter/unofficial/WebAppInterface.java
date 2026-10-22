@@ -1,6 +1,5 @@
 package com.puter.unofficial;
 
-import android.app.Activity;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.SharedPreferences;
@@ -17,13 +16,16 @@ import android.util.Log;
 import android.webkit.JavascriptInterface;
 import android.widget.Toast;
 
+import com.puter.unofficial.logging.LiveLogManager;
+import com.puter.unofficial.logging.LogEntry;
+
 import java.io.OutputStream;
 
 /**
  * JavaScript interface bridge bound to headless_live_audio.html.
  * Handles Gemini Live Bidi WebSockets, Puter SDK authentication synchronization,
- * live audio streams, transcripts, vision tool events, and official Puter.js
- * client-side chat streaming and model listing.
+ * live audio streams, transcripts, vision tool events, official Puter.js
+ * client-side chat streaming, model listing, and deep telemetry logging.
  */
 public class WebAppInterface {
 
@@ -33,11 +35,13 @@ public class WebAppInterface {
     private final Handler mainHandler;
     private HeadlessAudioBridge audioBridge;
     private MainActivity mainActivity;
+    private final LiveLogManager logger;
 
     public WebAppInterface(Context context) {
         this.context = context;
         this.prefs = context.getSharedPreferences(AppConstants.PREF_NAME, Context.MODE_PRIVATE);
         this.mainHandler = new Handler(Looper.getMainLooper());
+        this.logger = LiveLogManager.getInstance(context);
     }
 
     public void setAudioBridge(HeadlessAudioBridge bridge) {
@@ -47,6 +51,22 @@ public class WebAppInterface {
     public void setMainActivity(MainActivity activity) {
         this.mainActivity = activity;
     }
+
+    // --- SYSTEM LOG CONSOLE TELEMETRY BRIDGE ---
+
+    @JavascriptInterface
+    public void logTechnicalEvent(String levelStr, String tag, String title, String details) {
+        LogEntry.Level level = LogEntry.Level.INFO;
+        try {
+            if (levelStr != null) {
+                level = LogEntry.Level.valueOf(levelStr.toUpperCase());
+            }
+        } catch (Exception ignored) {}
+
+        logger.log(level, tag != null ? tag : "JS_BRIDGE", title, details);
+    }
+
+    // --- EXISTING CONFIGURATION METHODS ---
 
     @JavascriptInterface
     public String getGeminiApiKey() {
@@ -61,7 +81,6 @@ public class WebAppInterface {
                 return m;
             }
         }
-        // Strict fallback to the primary supported live model from your configuration
         return "gemini-3.1-flash-live-preview";
     }
 
@@ -88,7 +107,7 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void onAuthStatusChanged(boolean isSignedIn) {
-        Log.d(TAG, "Puter SDK onAuthStatusChanged: " + isSignedIn);
+        logger.info("PUTER_AUTH", "Auth Status Changed", "isSignedIn: " + isSignedIn);
         AuthManager.getInstance(context).setLoggedIn(isSignedIn);
         if (mainActivity != null) {
             mainActivity.runOnUiThread(() -> mainActivity.reloadWebView());
@@ -114,6 +133,7 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void signOut() {
+        logger.info("PUTER_AUTH", "Sign Out Triggered", "Clearing native session.");
         AuthManager.getInstance(context).logout();
         if (mainActivity != null) {
             mainActivity.runOnUiThread(() -> mainActivity.reloadWebView());
@@ -154,7 +174,6 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void onPuterLiveModelsResult(String modelsJson) {
-        Log.d(TAG, "Puter live models payload received via SDK bridge");
         if (audioBridge != null) {
             audioBridge.dispatchPuterModels(modelsJson);
         }
@@ -165,7 +184,6 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void onPuterError(String errorMessage) {
-        Log.e(TAG, "Puter SDK error via bridge: " + errorMessage);
         if (audioBridge != null) {
             audioBridge.dispatchPuterError(errorMessage);
         }
@@ -178,7 +196,7 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void onLiveSessionConnected() {
-        Log.d(TAG, "Live WebSocket session connected");
+        logger.ok("GEMINI_LIVE", "Session Connected", "WebSocket Bidi link successfully established.");
         if (audioBridge != null) {
             audioBridge.dispatchConnected();
         }
@@ -206,7 +224,7 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void onLiveCommentaryFinished() {
-        Log.d(TAG, "Live commentary turn completed");
+        logger.info("GEMINI_LIVE", "Turn Completed", "Live commentary response finished.");
         if (audioBridge != null) {
             audioBridge.dispatchFinished();
         }
@@ -217,7 +235,6 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void onLiveError(String err) {
-        Log.e(TAG, "Live commentary error: " + err);
         if (audioBridge != null) {
             audioBridge.dispatchError(err);
         }
@@ -228,7 +245,6 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void onTargetCoordinatesReceived(String targetId, float left, float top, float right, float bottom) {
-        Log.d(TAG, "Target coordinates received: " + targetId + " -> [" + left + ", " + top + ", " + right + ", " + bottom + "]");
         if (audioBridge != null) {
             audioBridge.dispatchTargetCoordinates(targetId, left, top, right, bottom);
         }
@@ -236,7 +252,7 @@ public class WebAppInterface {
 
     @JavascriptInterface
     public void logDiagnostic(String msg, String tag) {
-        Log.d("PuterLiveDiagnostic", "[" + tag + "] " + msg);
+        logger.info(tag != null ? tag : "DIAGNOSTIC", msg, "");
     }
 
     @JavascriptInterface
@@ -266,9 +282,11 @@ public class WebAppInterface {
                         bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out);
                     }
                     mainHandler.post(() -> Toast.makeText(context, "Image saved to Gallery", Toast.LENGTH_SHORT).show());
+                    logger.ok("IMAGE_EXPORT", "Saved Successfully", "Path: " + uri.toString());
                 }
             } catch (Exception e) {
                 mainHandler.post(() -> Toast.makeText(context, "Save failed: " + e.getMessage(), Toast.LENGTH_SHORT).show());
+                logger.error("IMAGE_EXPORT", "Save Failed", e.getMessage());
             }
         }).start();
     }
