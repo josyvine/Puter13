@@ -12,7 +12,10 @@ import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.Rect;
+import android.net.ConnectivityManager;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -175,6 +178,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
     // Dialog reference for Puter Authentication
     private Dialog puterAuthDialog;
     private boolean isPuterAuthProcessing = false;
+    private String lastInjectedPuterToken = null;
 
     // Adapters & Managers
     private ChatAdapter chatAdapter;
@@ -353,7 +357,6 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
             return false;
         });
 
-        // Initialize UI State
         LiveLogManager logger = LiveLogManager.getInstance(this);
         onNewLogEntry(null, logger.getTotalCount(), logger.getErrorCount());
     }
@@ -555,12 +558,19 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
     /**
      * Injects the active Puter authentication token directly into localStorage
      * and into the in-memory puter SDK instance (puter.authToken and puter.auth.token).
+     * Guarded with lastInjectedPuterToken to permanently prevent recursion ping-pong bloat.
      */
     public void syncPuterTokenToHeadless() {
         if (headlessAudioWebView == null) return;
         String token = AuthManager.getInstance(this).getAuthToken();
         if (token != null && !token.trim().isEmpty()) {
-            String safeToken = token.replace("'", "\\'");
+            String clean = token.trim();
+            if (clean.equals(lastInjectedPuterToken)) {
+                return; // Token already synchronized, abort loop completely
+            }
+            lastInjectedPuterToken = clean;
+
+            String safeToken = clean.replace("'", "\\'");
             String js = "try { " +
                         "  localStorage.setItem('puter.auth.token', '" + safeToken + "'); " +
                         "  if (typeof puter !== 'undefined') { " +
@@ -569,9 +579,12 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                         "  } " +
                         "} catch(e) {}";
             headlessAudioWebView.evaluateJavascript(js, null);
-            LiveLogManager.getInstance().ok("PUTER_AUTH", "Token Injected to Headless", "Length: " + token.length() + " chars");
+            LiveLogManager.getInstance().ok("PUTER_AUTH", "Token Injected to Headless", "Length: " + clean.length() + " chars");
         } else {
-            LiveLogManager.getInstance().warn("PUTER_AUTH", "Token Missing in Native Storage", "AuthManager returned empty/null token during headless sync.");
+            if (lastInjectedPuterToken != null) {
+                lastInjectedPuterToken = null;
+                LiveLogManager.getInstance().warn("PUTER_AUTH", "Token Cleared", "AuthManager token is now empty.");
+            }
         }
     }
 
@@ -1291,9 +1304,32 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         return text;
     }
 
+    /**
+     * Executes Puter multi-model chat or image generation via the headless Puter SDK worker.
+     * Logs deep Java-side dispatch state and active network status.
+     */
     private void dispatchPuterGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
         currentActiveAssistantMsg = assistantMsg;
         syncPuterTokenToHeadless();
+
+        // Audit device network connection
+        boolean isConnected = false;
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            if (cm != null) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    NetworkCapabilities caps = cm.getNetworkCapabilities(cm.getActiveNetwork());
+                    isConnected = (caps != null && (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                            && caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)));
+                } else {
+                    android.net.NetworkInfo ni = cm.getActiveNetworkInfo();
+                    isConnected = (ni != null && ni.isConnected());
+                }
+            }
+        } catch (Exception ignored) {}
+
+        LiveLogManager.getInstance().process("PUTER_DISPATCH", "Packaging Payload in Java",
+                "Model: " + activeModelId + " | Network Validated: " + isConnected + " | Prompt Len: " + prompt.length());
 
         JSONArray messagesArray = new JSONArray();
         try {
@@ -1340,8 +1376,11 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         boolean isImageGen = isImageGenerationModel(activeModelId);
 
         if (headlessAudioBridge != null) {
+            LiveLogManager.getInstance().info("PUTER_DISPATCH", "Handing to Headless Bridge",
+                    "Dispatching to window.sendPuterChat (Stream: " + !isImageGen + ")");
             headlessAudioBridge.sendPuterChat(messagesArray.toString(), activeModelId, !isImageGen, sysInst, ratio);
         } else {
+            LiveLogManager.getInstance().error("PUTER_DISPATCH", "Bridge Missing", "HeadlessAudioBridge instance is null");
             onPuterGenerationError("Headless worker bridge not available");
         }
     }
@@ -1830,6 +1869,8 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                 currentSession.setSelectedModelId(activeModelId);
                 sessionManager.saveSession(currentSession);
             }
+            LiveLogManager.getInstance().info("PUTER_MODEL", "Model Switched by User",
+                    "Name: " + model.getDisplayName() + " | ID: " + model.getId() + " | Context: " + model.getContextWindow());
             Toast.makeText(MainActivity.this, "Selected: " + model.getDisplayName(), Toast.LENGTH_SHORT).show();
         });
 
@@ -2380,6 +2421,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         if (loggedIn) {
             LiveLogManager.getInstance().process("PUTER_AUTH", "User Triggered Sign Out", "Purging credentials and session cache.");
             AuthManager.getInstance(this).logout();
+            lastInjectedPuterToken = null;
             refreshDropdownUI();
             Toast.makeText(this, "Signed Out", Toast.LENGTH_SHORT).show();
             if (headlessAudioWebView != null) {
