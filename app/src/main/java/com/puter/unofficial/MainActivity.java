@@ -1870,7 +1870,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
                 sessionManager.saveSession(currentSession);
             }
             LiveLogManager.getInstance().info("PUTER_MODEL", "Model Switched by User",
-                    "Name: " + model.getDisplayName() + " | ID: " + model.getId() + " | Context: " + model.getContextWindow());
+                    "Name: " + model.getDisplayName() + " | ID: " + model.getId());
             Toast.makeText(MainActivity.this, "Selected: " + model.getDisplayName(), Toast.LENGTH_SHORT).show();
         });
 
