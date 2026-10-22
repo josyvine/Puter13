@@ -2848,4 +2848,3 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         }
     }
 }
-
