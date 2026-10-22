@@ -434,13 +434,42 @@ window.fetchPuterLiveModels = async function() {
 window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMessage, aspectRatio) {
     const bridge = getBridge();
     isPuterChatAborted = false;
+    let hasReceivedAnyChunk = false;
+
+    // Safety watchdog: abort if generation stalls longer than 25s
+    const watchdogTimer = setTimeout(() => {
+        if (!hasReceivedAnyChunk && !isPuterChatAborted) {
+            isPuterChatAborted = true;
+            if (bridge && bridge.onPuterError) {
+                bridge.onPuterError("Puter timeout: Model took too long to answer. Please check network or select another model.");
+            }
+        }
+    }, 25000);
 
     try {
         if (typeof puter === 'undefined' || !puter.ai) {
+            clearTimeout(watchdogTimer);
             if (bridge && bridge.onPuterError) {
                 bridge.onPuterError("Puter SDK is not initialized.");
             }
             return;
+        }
+
+        // Self-healing: Ensure Puter token is actively present in localStorage
+        try {
+            let token = localStorage.getItem('puter.auth.token');
+            if ((!token || token.trim().length === 0) && bridge && bridge.getSavedAuthToken) {
+                const savedToken = bridge.getSavedAuthToken();
+                if (savedToken && savedToken.trim().length > 0) {
+                    localStorage.setItem('puter.auth.token', savedToken.trim());
+                }
+            }
+        } catch(ignored) {}
+
+        // Normalize model ID: convert colons to slashes (openrouter:ai21/... -> openrouter/ai21/...)
+        let cleanModel = modelId ? String(modelId).trim() : "gpt-4o-mini";
+        if (cleanModel.includes(":")) {
+            cleanModel = cleanModel.replace(":", "/");
         }
 
         // Parse messages if passed as serialized JSON string from Java
@@ -454,13 +483,12 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
         }
 
         // Detect if this is an image generation model
-        const modelLower = (modelId || "").toLowerCase();
+        const modelLower = cleanModel.toLowerCase();
         const isImageGen = modelLower.includes("banana") || modelLower.includes("dall-e") || 
                            modelLower.includes("flux") || modelLower.includes("imagen") || 
                            modelLower.includes("midjourney") || modelLower.includes("txt2img");
 
         if (isImageGen) {
-            // Extract the user prompt for image generation
             let promptText = "";
             if (Array.isArray(messages) && messages.length > 0) {
                 const last = messages[messages.length - 1];
@@ -469,13 +497,14 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
                 promptText = messages;
             }
 
-            const imgOptions = { model: modelId };
+            const imgOptions = { model: cleanModel };
             if (aspectRatio) {
                 imgOptions.aspect_ratio = aspectRatio;
             }
 
-            // Call official Puter txt2img
             const imageResult = await puter.ai.txt2img(promptText, imgOptions);
+            clearTimeout(watchdogTimer);
+
             let finalUrl = "";
             if (imageResult) {
                 if (typeof imageResult === 'string') {
@@ -490,14 +519,14 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             if (finalUrl && bridge && bridge.onPuterImageResult) {
                 bridge.onPuterImageResult(finalUrl);
             } else if (bridge && bridge.onPuterError) {
-                bridge.onPuterError("Could not extract image URL from Puter SDK result.");
+                bridge.onPuterError("Could not extract image URL from Puter result.");
             }
             return;
         }
 
         // Configure options for text streaming completion
         const chatOptions = {
-            model: modelId,
+            model: cleanModel,
             stream: isStream !== false
         };
 
@@ -508,7 +537,7 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
         // Execute chat completion via official Puter SDK
         const response = await puter.ai.chat(messages, chatOptions);
 
-        if (chatOptions.stream && response && response[Symbol.asyncIterator]) {
+        if (chatOptions.stream && response && (response[Symbol.asyncIterator] || response[Symbol.iterator])) {
             let fullAccumulator = "";
             for await (const chunk of response) {
                 if (isPuterChatAborted) break;
@@ -516,13 +545,19 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
                 let deltaText = "";
                 if (typeof chunk === 'string') {
                     deltaText = chunk;
-                } else if (chunk?.text) {
+                } else if (chunk?.text !== undefined) {
                     deltaText = chunk.text;
-                } else if (chunk?.message?.content) {
+                } else if (chunk?.message?.content !== undefined) {
                     deltaText = chunk.message.content;
+                } else if (chunk?.delta?.content !== undefined) {
+                    deltaText = chunk.delta.content;
+                } else if (chunk?.choices && chunk.choices[0]) {
+                    const c = chunk.choices[0];
+                    deltaText = c.delta?.content || c.text || "";
                 }
 
                 if (deltaText) {
+                    hasReceivedAnyChunk = true;
                     fullAccumulator += deltaText;
                     if (bridge && bridge.onPuterStreamChunk) {
                         bridge.onPuterStreamChunk(deltaText);
@@ -530,11 +565,15 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
                 }
             }
 
+            clearTimeout(watchdogTimer);
+
             if (!isPuterChatAborted && bridge && bridge.onPuterStreamComplete) {
                 bridge.onPuterStreamComplete(fullAccumulator);
             }
         } else {
             // Non-stream or single-turn response
+            clearTimeout(watchdogTimer);
+
             let completeText = "";
             if (typeof response === 'string') {
                 completeText = response;
@@ -552,6 +591,7 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
         }
 
     } catch (err) {
+        clearTimeout(watchdogTimer);
         console.error("Puter chat completion error:", err);
         if (!isPuterChatAborted && bridge && bridge.onPuterError) {
             bridge.onPuterError("Puter error: " + (err.message || JSON.stringify(err)));
