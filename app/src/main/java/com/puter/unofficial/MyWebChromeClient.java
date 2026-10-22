@@ -269,7 +269,7 @@ public class MyWebChromeClient extends WebChromeClient {
                 }
             }
             if (token != null && !token.trim().isEmpty()) {
-                AuthManager.getInstance(activity).savePuterAuthToken(token.trim());
+                AuthManager.getInstance(activity).saveAuthToken(token.trim());
                 triggerNativeLog("Extracted Puter token directly from URL parameter", "native");
             }
         } catch (Exception ignored) {}
@@ -300,7 +300,7 @@ public class MyWebChromeClient extends WebChromeClient {
                                 key.equalsIgnoreCase("puter-auth")) {
                                 
                                 if (!val.isEmpty()) {
-                                    AuthManager.getInstance(activity).savePuterAuthToken(val);
+                                    AuthManager.getInstance(activity).saveAuthToken(val);
                                     triggerNativeLog("Saved Puter auth token from cookie [" + key + "]", "native");
                                     return;
                                 }
