@@ -453,8 +453,9 @@ function syncPuterTokenToNative(token, source) {
     if (!token || typeof token !== 'string' || token.trim().length === 0) return;
     const cleanToken = token.trim();
 
+    // Loop Breaker: abort immediately if this token was already synchronized
     if (cleanToken === lastSyncedTokenToNative) {
-        return; // Guard: identical token already synchronized, abort immediately
+        return;
     }
     lastSyncedTokenToNative = cleanToken;
 
@@ -507,17 +508,10 @@ function ensurePuterAuth() {
                         source = "Native AuthManager (getAuthToken)";
                     }
                 }
-                if ((!token || token.trim().length === 0) && bridge.getSavedAuthToken) {
-                    const natToken = bridge.getSavedAuthToken();
-                    if (natToken && natToken.trim().length > 5) {
-                        token = natToken;
-                        source = "Native AuthManager (getSavedAuthToken)";
-                    }
-                }
             }
         }
 
-        // If found anywhere, propagate to all layers
+        // If found anywhere, propagate and update SDK state
         if (token && token.trim().length > 0) {
             token = token.trim();
             try { localStorage.setItem('puter.auth.token', token); } catch(e) {}
@@ -576,7 +570,7 @@ window.checkAndBroadcastAuth = async function() {
 };
 
 window.addEventListener('load', () => {
-    setTimeout(window.checkAndBroadcastAuth, 1200);
+    setTimeout(window.checkAndBroadcastAuth, 1000);
 });
 
 /**
@@ -629,7 +623,7 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
     isPuterChatAborted = false;
     let hasReceivedAnyChunk = false;
 
-    // Heartbeat ticker to explain exactly how long Puter is taking
+    // Heartbeat ticker to inform exactly how long Puter is taking
     let secondsElapsed = 0;
     const heartbeatTimer = setInterval(() => {
         if (!hasReceivedAnyChunk && !isPuterChatAborted) {
@@ -645,7 +639,7 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
         clearInterval(heartbeatTimer);
         if (!hasReceivedAnyChunk && !isPuterChatAborted) {
             isPuterChatAborted = true;
-            sendLogToNative("ERROR", "PUTER_TIMEOUT", "Watchdog Fired", `25s timeout exceeded for model: ${modelId}. Upstream stalled.`);
+            sendLogToNative("ERROR", "PUTER_TIMEOUT", "Watchdog Fired", `25s timeout exceeded for model: ${modelId}. Upstream server stalled.`);
             if (bridge && bridge.onPuterError) {
                 bridge.onPuterError("Puter timeout: Model took too long to answer. Upstream server may be rate-limited or stalled.");
             }
