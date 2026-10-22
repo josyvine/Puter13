@@ -81,15 +81,70 @@ public class PuterChatManager {
         }
     }
 
+    /**
+     * Resolves the token from explicit input, AuthManager, or extracts it directly from CookieManager.
+     */
+    private String resolvePuterAuthToken(String explicitToken) {
+        if (explicitToken != null && !explicitToken.trim().isEmpty()) {
+            return explicitToken.trim();
+        }
+
+        try {
+            AuthManager auth = AuthManager.getInstance(context);
+            String token = auth.getAuthToken();
+            if (token != null && !token.trim().isEmpty()) {
+                return token.trim();
+            }
+            token = auth.getSavedAuthToken();
+            if (token != null && !token.trim().isEmpty()) {
+                return token.trim();
+            }
+        } catch (Exception ignored) {}
+
+        // Fallback: Extract directly from CookieManager
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            String cookies = cm.getCookie("https://puter.com");
+            if (cookies == null || cookies.isEmpty()) {
+                cookies = cm.getCookie("https://api.puter.com");
+            }
+            if (cookies != null && !cookies.isEmpty()) {
+                for (String c : cookies.split(";")) {
+                    String[] kv = c.trim().split("=");
+                    if (kv.length >= 2) {
+                        String k = kv[0].trim();
+                        String v = kv[1].trim();
+                        if (k.equalsIgnoreCase("token") ||
+                            k.equalsIgnoreCase("puter_auth_token") ||
+                            k.equalsIgnoreCase("puter_token") ||
+                            k.equalsIgnoreCase("auth_token") ||
+                            k.equalsIgnoreCase("puter-auth")) {
+                            if (!v.isEmpty()) {
+                                try {
+                                    AuthManager.getInstance(context).saveAuthToken(v);
+                                } catch (Exception ignored) {}
+                                return v;
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception ignored) {}
+
+        return "";
+    }
+
     public void fetchLiveModels(String authToken, PuterLiveModelsListener listener) {
         new Thread(() -> {
             try {
+                final String resolvedToken = resolvePuterAuthToken(authToken);
+
                 // Tier 1: Fetch via Puter's OpenAI-compatible models endpoint
                 Request.Builder openAiReq = new Request.Builder()
                         .url(PUTER_OPENAI_MODELS_URL)
                         .get()
                         .addHeader("Accept", "application/json");
-                applyAuthAndOriginHeaders(openAiReq, authToken);
+                applyAuthAndOriginHeaders(openAiReq, resolvedToken);
 
                 Response openAiResp = client.newCall(openAiReq.build()).execute();
                 if (openAiResp.isSuccessful() && openAiResp.body() != null) {
@@ -103,7 +158,7 @@ public class PuterChatManager {
                         .url(PUTER_V2_MODELS_URL)
                         .get()
                         .addHeader("Accept", "application/json");
-                applyAuthAndOriginHeaders(v2Req, authToken);
+                applyAuthAndOriginHeaders(v2Req, resolvedToken);
 
                 Response v2Resp = client.newCall(v2Req.build()).execute();
                 if (v2Resp.isSuccessful() && v2Resp.body() != null) {
@@ -124,7 +179,7 @@ public class PuterChatManager {
                         .url(PUTER_DRIVERS_CALL_URL)
                         .post(RequestBody.create(rootPayload.toString(), JSON))
                         .addHeader("Accept", "application/json");
-                applyAuthAndOriginHeaders(driverReq, authToken);
+                applyAuthAndOriginHeaders(driverReq, resolvedToken);
 
                 Response driverResp = client.newCall(driverReq.build()).execute();
                 if (driverResp.isSuccessful() && driverResp.body() != null) {
@@ -146,7 +201,7 @@ public class PuterChatManager {
 
         new Thread(() -> {
             try {
-                String authToken = AuthManager.getInstance(context).getAuthToken();
+                String authToken = resolvePuterAuthToken(null);
                 boolean isImageGen = isImageModel(modelId);
                 String normalizedModel = normalizeModelId(modelId);
 
@@ -419,11 +474,12 @@ public class PuterChatManager {
 
         if (authToken != null && !authToken.trim().isEmpty()) {
             builder.addHeader("Authorization", "Bearer " + authToken.trim());
-        } else {
-            String cookies = CookieManager.getInstance().getCookie("https://puter.com");
-            if (cookies != null && !cookies.isEmpty()) {
-                builder.addHeader("Cookie", cookies);
-            }
+        }
+
+        // Attach cookies alongside the bearer token so Puter's gateway validates sessions properly
+        String cookies = CookieManager.getInstance().getCookie("https://puter.com");
+        if (cookies != null && !cookies.isEmpty()) {
+            builder.addHeader("Cookie", cookies);
         }
     }
 
