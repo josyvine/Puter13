@@ -169,6 +169,7 @@ public class MyWebChromeClient extends WebChromeClient {
                     return;
                 }
 
+                extractAndStorePuterAuthTokens();
                 checkAuthCompletion(view, url);
             }
 
@@ -229,10 +230,14 @@ public class MyWebChromeClient extends WebChromeClient {
         if (url == null || isAuthProcessing || activity == null) return;
         lastAuthUrl = url;
 
+        // Try extracting token from URL if present (e.g., redirect callbacks)
+        extractTokenFromUrl(url);
+
         AuthManager auth = AuthManager.getInstance(activity);
         if (auth.isAuthCallback(url)) {
             isAuthProcessing = true;
             triggerNativeLog("Puter auth completion detected: " + url + ". Closing dialog...", "native");
+            extractAndStorePuterAuthTokens();
             CookieManager.getInstance().flush();
             view.postDelayed(this::closeAuthAndRefresh, 400);
         }
@@ -244,10 +249,79 @@ public class MyWebChromeClient extends WebChromeClient {
     }
 
     /**
+     * Extracts token parameters directly if present in redirect URLs.
+     */
+    private void extractTokenFromUrl(String url) {
+        if (url == null || activity == null) return;
+        try {
+            Uri uri = Uri.parse(url);
+            String token = uri.getQueryParameter("token");
+            if (token == null) {
+                token = uri.getQueryParameter("puter_auth_token");
+            }
+            if (token == null && uri.getFragment() != null) {
+                for (String part : uri.getFragment().split("&")) {
+                    String[] kv = part.split("=");
+                    if (kv.length == 2 && (kv[0].equalsIgnoreCase("token") || kv[0].equalsIgnoreCase("access_token"))) {
+                        token = kv[1];
+                        break;
+                    }
+                }
+            }
+            if (token != null && !token.trim().isEmpty()) {
+                AuthManager.getInstance(activity).savePuterAuthToken(token.trim());
+                triggerNativeLog("Extracted Puter token directly from URL parameter", "native");
+            }
+        } catch (Exception ignored) {}
+    }
+
+    /**
+     * Inspects cookies from puter.com and synchronizes them to AuthManager.
+     */
+    private void extractAndStorePuterAuthTokens() {
+        if (activity == null) return;
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            cm.flush();
+            String[] domains = new String[]{"https://puter.com", "https://api.puter.com", "https://*.puter.com"};
+            for (String domain : domains) {
+                String cookieStr = cm.getCookie(domain);
+                if (cookieStr != null && !cookieStr.isEmpty()) {
+                    String[] cookies = cookieStr.split(";");
+                    for (String c : cookies) {
+                        String[] pair = c.trim().split("=");
+                        if (pair.length >= 2) {
+                            String key = pair[0].trim();
+                            String val = pair[1].trim();
+                            if (key.equalsIgnoreCase("token") ||
+                                key.equalsIgnoreCase("puter_auth_token") ||
+                                key.equalsIgnoreCase("puter_token") ||
+                                key.equalsIgnoreCase("auth_token") ||
+                                key.equalsIgnoreCase("puter-auth")) {
+                                
+                                if (!val.isEmpty()) {
+                                    AuthManager.getInstance(activity).savePuterAuthToken(val);
+                                    triggerNativeLog("Saved Puter auth token from cookie [" + key + "]", "native");
+                                    return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed extracting cookies: " + e.getMessage());
+        }
+    }
+
+    /**
      * Finalizes authentication, marks session in AuthManager, dismisses popup, and refreshes UI.
      */
     private void closeAuthAndRefresh() {
         CookieManager.getInstance().flush(); 
+
+        // Ensure tokens from cookies/URL are extracted and stored
+        extractAndStorePuterAuthTokens();
 
         if (activity != null) {
             AuthManager auth = AuthManager.getInstance(activity);
