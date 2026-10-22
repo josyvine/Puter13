@@ -78,6 +78,7 @@ let isSessionActive = false;
 let currentPersona = "";
 let nextPlaybackTime = 0;
 let isPuterChatAborted = false;
+let lastSyncedTokenToNative = null;
 
 window.startCommentarySession = function(scriptText, personaPrompt) {
     sendLogToNative("PROCESS", "GEMINI_LIVE", "Starting Live Audio Session", `Target: ${scriptText ? 'Vision' : 'Standard'}`);
@@ -446,10 +447,17 @@ function playAudioChunk(base64Pcm) {
 
 /**
  * Pushes any discovered Puter token to Java native AuthManager and updates UI status.
+ * Strictly dedupes to permanently kill recursive loop spam.
  */
 function syncPuterTokenToNative(token, source) {
     if (!token || typeof token !== 'string' || token.trim().length === 0) return;
     const cleanToken = token.trim();
+
+    if (cleanToken === lastSyncedTokenToNative) {
+        return; // Guard: identical token already synchronized, abort immediately
+    }
+    lastSyncedTokenToNative = cleanToken;
+
     const bridge = getBridge();
     if (bridge && bridge.saveAuthToken) {
         bridge.saveAuthToken(cleanToken);
@@ -520,7 +528,6 @@ function ensurePuterAuth() {
                 }
             }
             syncPuterTokenToNative(token, source);
-            sendLogToNative("OK", "PUTER_AUTH", "Token Resolved", `Source: ${source} | Characters: ${token.length}`);
             return token;
         }
 
@@ -528,7 +535,6 @@ function ensurePuterAuth() {
         sendLogToNative("ERROR", "PUTER_AUTH", "Token Resolution Exception", e.message || String(e));
     }
 
-    // Detailed diagnostic breakdown of why no token was found
     const diagDetails = `Checked: [SDK Memory: ${typeof puter !== 'undefined' && puter.authToken ? 'Present' : 'Empty'}, ` +
                         `LocalStorage: ${localStorage.getItem('puter.auth.token') ? 'Present' : 'Empty'}, ` +
                         `Native Bridge: ${bridge && bridge.getAuthToken && bridge.getAuthToken() ? 'Present' : 'Empty'}]`;
@@ -613,6 +619,7 @@ window.fetchPuterLiveModels = async function() {
 
 /**
  * Sends a chat turn or image generation request via official puter.js client.
+ * Features live latency heartbeat ticker, TTFT tracking, and verbose HTTP telemetry.
  */
 window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMessage, aspectRatio) {
     const startDispatchTime = Date.now();
@@ -622,20 +629,34 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
     isPuterChatAborted = false;
     let hasReceivedAnyChunk = false;
 
+    // Heartbeat ticker to explain exactly how long Puter is taking
+    let secondsElapsed = 0;
+    const heartbeatTimer = setInterval(() => {
+        if (!hasReceivedAnyChunk && !isPuterChatAborted) {
+            secondsElapsed += 5;
+            sendLogToNative("INFO", "PUTER_CHAT", "Waiting for Server Response", 
+                `Model: ${modelId} | Elapsed: ${secondsElapsed}s | Upstream connection pending...`);
+        } else {
+            clearInterval(heartbeatTimer);
+        }
+    }, 5000);
+
     const watchdogTimer = setTimeout(() => {
+        clearInterval(heartbeatTimer);
         if (!hasReceivedAnyChunk && !isPuterChatAborted) {
             isPuterChatAborted = true;
-            sendLogToNative("ERROR", "PUTER_TIMEOUT", "Watchdog Fired", "25 seconds elapsed with no chunk arrival.");
+            sendLogToNative("ERROR", "PUTER_TIMEOUT", "Watchdog Fired", `25s timeout exceeded for model: ${modelId}. Upstream stalled.`);
             if (bridge && bridge.onPuterError) {
-                bridge.onPuterError("Puter timeout: Model took too long to answer. Please select another model or check network.");
+                bridge.onPuterError("Puter timeout: Model took too long to answer. Upstream server may be rate-limited or stalled.");
             }
         }
     }, 25000);
 
     try {
         if (typeof puter === 'undefined' || !puter.ai) {
+            clearInterval(heartbeatTimer);
             clearTimeout(watchdogTimer);
-            sendLogToNative("ERROR", "PUTER_SDK", "SDK Missing", "Attempted to call sendPuterChat but SDK is not injected.");
+            sendLogToNative("ERROR", "PUTER_SDK", "SDK Missing", "Puter SDK not found in headless context.");
             if (bridge && bridge.onPuterError) bridge.onPuterError("Puter SDK is not initialized.");
             return;
         }
@@ -651,7 +672,7 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             } catch(e){}
             
             if (!isSigned) {
-                sendLogToNative("PROCESS", "PUTER_AUTH", "Creating Temp User Session", "No token found. Attempting silent anonymous session creation...");
+                sendLogToNative("PROCESS", "PUTER_AUTH", "Creating Temp User Session", "Attempting silent anonymous session creation...");
                 try {
                     await puter.auth.signIn({ attempt_temp_user_creation: true });
                     authToken = ensurePuterAuth();
@@ -659,6 +680,7 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
                         sendLogToNative("OK", "PUTER_AUTH", "Temp User Session Created", `Token Length: ${authToken.length}`);
                     }
                 } catch(authErr) {
+                    clearInterval(heartbeatTimer);
                     clearTimeout(watchdogTimer);
                     sendLogToNative("ERROR", "PUTER_AUTH", "Temp User Creation Failed", authErr.message || String(authErr));
                     if (bridge && bridge.onPuterError) {
@@ -698,7 +720,7 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             messages.unshift({ role: 'system', content: systemMessage.trim() });
         }
 
-        sendLogToNative("INFO", "PUTER_PAYLOAD", "Payload Built", `Raw Request Size: ${JSON.stringify(messages).length} chars`);
+        sendLogToNative("INFO", "PUTER_PAYLOAD", "Payload Built", `Model: ${cleanModel} | Size: ${JSON.stringify(messages).length} chars`);
 
         const modelLower = cleanModel.toLowerCase();
         const isImageGen = modelLower.includes("banana") || modelLower.includes("dall-e") || 
@@ -711,6 +733,7 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             if (aspectRatio) imgOptions.aspect_ratio = aspectRatio;
 
             const imageResult = await puter.ai.txt2img(userPromptText, imgOptions);
+            clearInterval(heartbeatTimer);
             clearTimeout(watchdogTimer);
 
             let finalUrl = "";
@@ -735,13 +758,14 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
 
         let response = null;
         try {
+            sendLogToNative("PROCESS", "PUTER_SDK_CALL", "Initiating puter.ai.chat()", `Model: ${cleanModel}`);
             if (Array.isArray(messages) && messages.length > 1) {
                 response = await puter.ai.chat(messages, chatOptions);
             } else {
                 response = await puter.ai.chat(userPromptText, chatOptions);
             }
         } catch (chatCallErr) {
-            sendLogToNative("WARN", "PUTER_RETRY", "Multi-turn failed", "Falling back to strict string prompt mode.");
+            sendLogToNative("WARN", "PUTER_RETRY", "Multi-turn failed", (chatCallErr.message || String(chatCallErr)) + " - Retrying as string prompt.");
             response = await puter.ai.chat(userPromptText, chatOptions);
         }
 
@@ -749,13 +773,16 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             let fullAccumulator = "";
             for await (const chunk of response) {
                 if (isPuterChatAborted) {
+                    clearInterval(heartbeatTimer);
                     sendLogToNative("WARN", "PUTER_STREAM", "Stream Aborted", "User manually stopped generation.");
                     break;
                 }
 
                 if (!hasReceivedAnyChunk) {
                     hasReceivedAnyChunk = true;
-                    sendLogToNative("OK", "PUTER_STREAM", "First Chunk Arrived", `Latency: ${Date.now() - startDispatchTime}ms`);
+                    clearInterval(heartbeatTimer);
+                    const ttft = Date.now() - startDispatchTime;
+                    sendLogToNative("OK", "PUTER_STREAM", "First Chunk Arrived (TTFT)", `Latency: ${ttft}ms (${(ttft/1000).toFixed(2)}s)`);
                 }
 
                 let deltaText = "";
@@ -776,12 +803,14 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
                 }
             }
 
+            clearInterval(heartbeatTimer);
             clearTimeout(watchdogTimer);
             if (!isPuterChatAborted && bridge && bridge.onPuterStreamComplete) {
-                sendLogToNative("OK", "PUTER_STREAM", "Stream Complete", `Total Size: ${fullAccumulator.length} chars`);
+                sendLogToNative("OK", "PUTER_STREAM", "Stream Complete", `Total Size: ${fullAccumulator.length} chars | Total Duration: ${Date.now() - startDispatchTime}ms`);
                 bridge.onPuterStreamComplete(fullAccumulator);
             }
         } else {
+            clearInterval(heartbeatTimer);
             clearTimeout(watchdogTimer);
             let completeText = "";
             if (typeof response === 'string') completeText = response;
@@ -789,13 +818,15 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             else if (response?.text) completeText = response.text;
             else completeText = JSON.stringify(response);
 
-            sendLogToNative("OK", "PUTER_COMPLETION", "Single-Turn Complete", `Total Size: ${completeText.length} chars`);
+            sendLogToNative("OK", "PUTER_COMPLETION", "Single-Turn Complete", `Total Size: ${completeText.length} chars | Total Duration: ${Date.now() - startDispatchTime}ms`);
             if (bridge && bridge.onPuterStreamComplete) bridge.onPuterStreamComplete(completeText);
         }
 
     } catch (err) {
+        clearInterval(heartbeatTimer);
         clearTimeout(watchdogTimer);
-        sendLogToNative("ERROR", "PUTER_EXCEPTION", "Chat Call Threw Exception", err.message || String(err));
+        const errDetails = err?.status ? `HTTP ${err.status}: ${err.message}` : (err.message || String(err));
+        sendLogToNative("ERROR", "PUTER_EXCEPTION", "Chat Call Exception", errDetails);
         if (!isPuterChatAborted && bridge && bridge.onPuterError) {
             let errString = "";
             if (typeof err === 'string') errString = err;
