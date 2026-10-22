@@ -259,7 +259,7 @@ window.stopCommentarySession = function() {
     cleanupAudio();
     if (liveWs) {
         try { 
-            liveWs.onclose = null; // Suppress duplicate disconnect invocation
+            liveWs.onclose = null;
             liveWs.close(); 
         } catch(e) {}
         liveWs = null;
@@ -389,8 +389,33 @@ function playAudioChunk(base64Pcm) {
 // =========================================================================
 
 /**
+ * Ensures the SDK has a valid token directly in JavaScript memory.
+ */
+function ensurePuterAuth() {
+    const bridge = getBridge();
+    let token = "";
+    try {
+        token = localStorage.getItem('puter.auth.token') || "";
+        if ((!token || token.trim().length === 0) && bridge && bridge.getSavedAuthToken) {
+            token = bridge.getSavedAuthToken() || "";
+        }
+        if (token && token.trim().length > 0) {
+            token = token.trim();
+            localStorage.setItem('puter.auth.token', token);
+            if (typeof puter !== 'undefined') {
+                puter.authToken = token;
+                if (puter.auth) {
+                    puter.auth.token = token;
+                }
+            }
+            return token;
+        }
+    } catch(e) {}
+    return null;
+}
+
+/**
  * Fetches live models using the official Puter SDK runtime.
- * Automatically resolves OpenRouter, Together-AI, and Puter provider models.
  */
 window.fetchPuterLiveModels = async function() {
     const bridge = getBridge();
@@ -401,6 +426,8 @@ window.fetchPuterLiveModels = async function() {
             }
             return;
         }
+
+        ensurePuterAuth();
 
         let models = null;
         if (typeof puter.ai.chat?.models === 'function') {
@@ -429,19 +456,18 @@ window.fetchPuterLiveModels = async function() {
 
 /**
  * Sends a chat turn or image generation request via official puter.js client.
- * Forwards tokens in real time to the native Android ChatAdapter.
  */
 window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMessage, aspectRatio) {
     const bridge = getBridge();
     isPuterChatAborted = false;
     let hasReceivedAnyChunk = false;
 
-    // Safety watchdog: abort if generation stalls longer than 25s
+    // Safety watchdog: prevent infinite spinner if generation stalls
     const watchdogTimer = setTimeout(() => {
         if (!hasReceivedAnyChunk && !isPuterChatAborted) {
             isPuterChatAborted = true;
             if (bridge && bridge.onPuterError) {
-                bridge.onPuterError("Puter timeout: Model took too long to answer. Please check network or select another model.");
+                bridge.onPuterError("Puter timeout: Model took too long to answer. Please select another model or check network.");
             }
         }
     }, 25000);
@@ -455,24 +481,30 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             return;
         }
 
-        // Self-healing: Ensure Puter token is actively present in localStorage
-        try {
-            let token = localStorage.getItem('puter.auth.token');
-            if ((!token || token.trim().length === 0) && bridge && bridge.getSavedAuthToken) {
-                const savedToken = bridge.getSavedAuthToken();
-                if (savedToken && savedToken.trim().length > 0) {
-                    localStorage.setItem('puter.auth.token', savedToken.trim());
-                }
-            }
-        } catch(ignored) {}
+        // 1. Synchronize token directly to SDK in-memory instance
+        const authToken = ensurePuterAuth();
 
-        // Normalize model ID: convert colons to slashes (openrouter:ai21/... -> openrouter/ai21/...)
+        // 2. Fallback check: if signed out and no token exists, do not freeze on invisible popup
+        if (!authToken && puter.auth && !puter.auth.isSignedIn()) {
+            try {
+                // Auto guest creation with free credits
+                await puter.auth.signIn({ attempt_temp_user_creation: true });
+            } catch(authErr) {
+                clearTimeout(watchdogTimer);
+                if (bridge && bridge.onPuterError) {
+                    bridge.onPuterError("Please sign in to your Puter account from the top-right menu.");
+                }
+                return;
+            }
+        }
+
+        // Normalize model identifier: convert colons to slashes
         let cleanModel = modelId ? String(modelId).trim() : "gpt-4o-mini";
         if (cleanModel.includes(":")) {
             cleanModel = cleanModel.replace(":", "/");
         }
 
-        // Parse messages if passed as serialized JSON string from Java
+        // Parse messages
         let messages = messagesInput;
         if (typeof messages === 'string') {
             try {
@@ -482,7 +514,14 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             }
         }
 
-        // Detect if this is an image generation model
+        // If system directive is supplied, insert as first turn
+        if (systemMessage && systemMessage.trim().length > 0) {
+            if (Array.isArray(messages)) {
+                messages.unshift({ role: 'system', content: systemMessage.trim() });
+            }
+        }
+
+        // Detect image generation models
         const modelLower = cleanModel.toLowerCase();
         const isImageGen = modelLower.includes("banana") || modelLower.includes("dall-e") || 
                            modelLower.includes("flux") || modelLower.includes("imagen") || 
@@ -524,15 +563,11 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             return;
         }
 
-        // Configure options for text streaming completion
+        // 3. Configure options according to Puter v2 SDK signature
         const chatOptions = {
             model: cleanModel,
             stream: isStream !== false
         };
-
-        if (systemMessage && systemMessage.trim().length > 0) {
-            chatOptions.system = systemMessage.trim();
-        }
 
         // Execute chat completion via official Puter SDK
         const response = await puter.ai.chat(messages, chatOptions);
@@ -571,7 +606,6 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
                 bridge.onPuterStreamComplete(fullAccumulator);
             }
         } else {
-            // Non-stream or single-turn response
             clearTimeout(watchdogTimer);
 
             let completeText = "";
@@ -594,13 +628,21 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
         clearTimeout(watchdogTimer);
         console.error("Puter chat completion error:", err);
         if (!isPuterChatAborted && bridge && bridge.onPuterError) {
-            bridge.onPuterError("Puter error: " + (err.message || JSON.stringify(err)));
+            let errString = "";
+            if (typeof err === 'string') {
+                errString = err;
+            } else if (err?.message) {
+                errString = err.message;
+            } else {
+                try { errString = JSON.stringify(err); } catch(e) { errString = String(err); }
+            }
+            bridge.onPuterError(errString);
         }
     }
 };
 
 /**
- * Aborts any currently active Puter text stream generation.
+ * Aborts active Puter text stream generation.
  */
 window.stopPuterChat = function() {
     isPuterChatAborted = true;
