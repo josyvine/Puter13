@@ -498,14 +498,14 @@ function ensurePuterAuth() {
             }
         }
 
-        // Layer 3: Check Native Java AuthManager via Bridge
+        // Layer 3: Check Native Java AuthManager via Bridge (Corrected Method Name)
         if (!token || token.trim().length === 0) {
             if (bridge) {
-                if (bridge.getAuthToken) {
-                    const natToken = bridge.getAuthToken();
-                    if (natToken && natToken.trim().length > 5) {
+                if (bridge.getSavedAuthToken) {
+                    const natToken = bridge.getSavedAuthToken();
+                    if (natToken && typeof natToken === 'string' && natToken.trim().length > 5) {
                         token = natToken;
-                        source = "Native AuthManager (getAuthToken)";
+                        source = "Native AuthManager (getSavedAuthToken)";
                     }
                 }
             }
@@ -531,7 +531,7 @@ function ensurePuterAuth() {
 
     const diagDetails = `Checked: [SDK Memory: ${typeof puter !== 'undefined' && puter.authToken ? 'Present' : 'Empty'}, ` +
                         `LocalStorage: ${localStorage.getItem('puter.auth.token') ? 'Present' : 'Empty'}, ` +
-                        `Native Bridge: ${bridge && bridge.getAuthToken && bridge.getAuthToken() ? 'Present' : 'Empty'}]`;
+                        `Native Bridge: ${bridge && bridge.getSavedAuthToken && bridge.getSavedAuthToken() ? 'Present' : 'Empty'}]`;
     sendLogToNative("WARN", "PUTER_AUTH", "Token Missing Across All Layers", diagDetails);
     return null;
 }
