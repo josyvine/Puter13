@@ -498,6 +498,9 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         headlessAudioBridge = new HeadlessAudioBridge(this, headlessAudioWebView);
         webAppInterface.setAudioBridge(headlessAudioBridge);
 
+        // Ensure Android never throttles background JavaScript execution or network calls
+        headlessAudioWebView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+
         WebSettings ws = headlessAudioWebView.getSettings();
         ws.setJavaScriptEnabled(true);
         ws.setDomStorageEnabled(true);
@@ -505,6 +508,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         ws.setJavaScriptCanOpenWindowsAutomatically(true);
         ws.setSupportMultipleWindows(true);
         ws.setMediaPlaybackRequiresUserGesture(false);
+        ws.setCacheMode(WebSettings.LOAD_DEFAULT);
 
         String userAgent = ws.getUserAgentString().replace("; wv", "");
         ws.setUserAgentString(userAgent);
@@ -2776,9 +2780,7 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
 
     public void reloadWebView() {
         runOnUiThread(this::refreshDropdownUI);
-        if (headlessAudioWebView != null) {
-            headlessAudioWebView.reload();
-        }
+        // Note: Do not reload headlessAudioWebView here as it destroys ongoing JS network calls and restarts the auth sync cycle
     }
 
     @Override
@@ -2848,3 +2850,4 @@ public class MainActivity extends AppCompatActivity implements LiveLogManager.Lo
         }
     }
 }
+
