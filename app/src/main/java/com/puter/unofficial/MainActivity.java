@@ -2568,8 +2568,4 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 }
-Please update 1 of 2
 
-Explain updation
-
-Ask next 
