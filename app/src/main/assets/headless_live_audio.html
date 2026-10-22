@@ -389,7 +389,7 @@ function playAudioChunk(base64Pcm) {
 // =========================================================================
 
 /**
- * Ensures the SDK has a valid token directly in JavaScript memory.
+ * Synchronizes the token into memory directly on puter.authToken and puter.auth.token.
  */
 function ensurePuterAuth() {
     const bridge = getBridge();
@@ -487,7 +487,6 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
         // 2. Fallback check: if signed out and no token exists, do not freeze on invisible popup
         if (!authToken && puter.auth && !puter.auth.isSignedIn()) {
             try {
-                // Auto guest creation with free credits
                 await puter.auth.signIn({ attempt_temp_user_creation: true });
             } catch(authErr) {
                 clearTimeout(watchdogTimer);
@@ -514,11 +513,21 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             }
         }
 
-        // If system directive is supplied, insert as first turn
-        if (systemMessage && systemMessage.trim().length > 0) {
-            if (Array.isArray(messages)) {
-                messages.unshift({ role: 'system', content: systemMessage.trim() });
+        // Extract last user prompt string for prompt-based invocation
+        let userPromptText = "";
+        if (Array.isArray(messages) && messages.length > 0) {
+            for (let i = messages.length - 1; i >= 0; i--) {
+                if (messages[i].role === 'user') {
+                    userPromptText = typeof messages[i].content === 'string' ? messages[i].content : JSON.stringify(messages[i].content);
+                    break;
+                }
             }
+            if (!userPromptText) {
+                const last = messages[messages.length - 1];
+                userPromptText = typeof last.content === 'string' ? last.content : JSON.stringify(last.content);
+            }
+        } else if (typeof messages === 'string') {
+            userPromptText = messages;
         }
 
         // Detect image generation models
@@ -528,20 +537,12 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
                            modelLower.includes("midjourney") || modelLower.includes("txt2img");
 
         if (isImageGen) {
-            let promptText = "";
-            if (Array.isArray(messages) && messages.length > 0) {
-                const last = messages[messages.length - 1];
-                promptText = typeof last.content === 'string' ? last.content : JSON.stringify(last.content);
-            } else if (typeof messages === 'string') {
-                promptText = messages;
-            }
-
             const imgOptions = { model: cleanModel };
             if (aspectRatio) {
                 imgOptions.aspect_ratio = aspectRatio;
             }
 
-            const imageResult = await puter.ai.txt2img(promptText, imgOptions);
+            const imageResult = await puter.ai.txt2img(userPromptText, imgOptions);
             clearTimeout(watchdogTimer);
 
             let finalUrl = "";
@@ -563,14 +564,28 @@ window.sendPuterChat = async function(messagesInput, modelId, isStream, systemMe
             return;
         }
 
-        // 3. Configure options according to Puter v2 SDK signature
+        // Configure options according to Puter v2 SDK signature
         const chatOptions = {
             model: cleanModel,
             stream: isStream !== false
         };
 
-        // Execute chat completion via official Puter SDK
-        const response = await puter.ai.chat(messages, chatOptions);
+        if (systemMessage && systemMessage.trim().length > 0) {
+            chatOptions.system = systemMessage.trim();
+        }
+
+        // Dual invocation: If it's a single prompt, pass userPromptText directly; otherwise pass messages array
+        let response = null;
+        try {
+            if (Array.isArray(messages) && messages.length > 1) {
+                response = await puter.ai.chat(messages, chatOptions);
+            } else {
+                response = await puter.ai.chat(userPromptText, chatOptions);
+            }
+        } catch (chatCallErr) {
+            // Fallback from messages array to prompt string
+            response = await puter.ai.chat(userPromptText, chatOptions);
+        }
 
         if (chatOptions.stream && response && (response[Symbol.asyncIterator] || response[Symbol.iterator])) {
             let fullAccumulator = "";
