@@ -62,6 +62,13 @@ public class LiveLogManager {
         return instance;
     }
 
+    /**
+     * Parameterless singleton accessor for classes where context is already initialized.
+     */
+    public static synchronized LiveLogManager getInstance() {
+        return instance;
+    }
+
     public void addListener(LogEventListener listener) {
         if (listener != null && !listeners.contains(listener)) {
             listeners.add(listener);
