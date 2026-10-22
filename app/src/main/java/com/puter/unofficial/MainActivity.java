@@ -327,7 +327,13 @@ public class MainActivity extends AppCompatActivity {
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(headlessAudioWebView, true);
 
-        headlessAudioWebView.setWebViewClient(new PuterWebViewClient(this));
+        headlessAudioWebView.setWebViewClient(new PuterWebViewClient(this) {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                syncPuterTokenToHeadless();
+            }
+        });
         headlessAudioWebView.setWebChromeClient(new MyWebChromeClient(this));
         headlessAudioWebView.addJavascriptInterface(webAppInterface, AppConstants.JS_BRIDGE_NAME);
 
@@ -362,6 +368,20 @@ public class MainActivity extends AppCompatActivity {
         });
 
         headlessAudioWebView.loadUrl("https://appassets.androidplatform.net/assets/headless_live_audio.html");
+    }
+
+    /**
+     * Injects the active Puter authentication token into the background WebView's localStorage.
+     * Prevents puter.js from freezing on interactive auth popups.
+     */
+    public void syncPuterTokenToHeadless() {
+        if (headlessAudioWebView == null) return;
+        String token = AuthManager.getInstance(this).getAuthToken();
+        if (token != null && !token.trim().isEmpty()) {
+            String safeToken = token.replace("'", "\\'");
+            String js = "try { localStorage.setItem('puter.auth.token', '" + safeToken + "'); } catch(e) {}";
+            headlessAudioWebView.evaluateJavascript(js, null);
+        }
     }
 
     public String getActiveModelId() {
@@ -1041,20 +1061,14 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * Accurately determines if the selected model is a standalone native Google Gemini API model.
-     * Prevents any Puter or OpenRouter model from ever being misrouted to Google API.
+     * Determines if the model is handled directly by Google Gemini API.
+     * Evaluates provider setting and excludes OpenRouter/Together-AI models.
      */
     private boolean isGeminiNativeModel(String modelId) {
         if (modelId == null) return false;
         String lower = modelId.toLowerCase(Locale.US);
         if (lower.contains("openrouter") || lower.contains("togetherai") || lower.contains("puter") || lower.contains(":")) {
             return false;
-        }
-        for (AIModelDefinition def : allModelsList) {
-            if (def.getId().equalsIgnoreCase(modelId)) {
-                String parent = def.getParentGroup();
-                return parent != null && parent.toLowerCase(Locale.US).contains("gemini");
-            }
         }
         return "Gemini".equalsIgnoreCase(activeProvider);
     }
@@ -1092,12 +1106,13 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * Executes Puter multi-model chat or image generation via the headless Puter SDK worker.
-     * Uses official puter.js client runtime to resolve all OpenRouter/Together-AI models without HTTP 404s.
+     * Injects the active auth token before sending so the SDK never stalls on auth popups.
      */
     private void dispatchPuterGeneration(String prompt, List<StagedFile> attachments, ChatMessage assistantMsg) {
         currentActiveAssistantMsg = assistantMsg;
-        JSONArray messagesArray = new JSONArray();
+        syncPuterTokenToHeadless();
 
+        JSONArray messagesArray = new JSONArray();
         try {
             List<ChatMessage> history = new ArrayList<>(currentSession.getMessages());
             if (history.size() >= 2) {
@@ -1364,6 +1379,7 @@ public class MainActivity extends AppCompatActivity {
 
                 if (AuthManager.getInstance(this).isLoggedIn()) {
                     Toast.makeText(this, "Syncing live models...", Toast.LENGTH_SHORT).show();
+                    syncPuterTokenToHeadless();
                     if (headlessAudioBridge != null) {
                         headlessAudioBridge.fetchPuterLiveModels();
                     }
@@ -2183,7 +2199,7 @@ public class MainActivity extends AppCompatActivity {
             refreshDropdownUI();
             Toast.makeText(this, "Signed Out", Toast.LENGTH_SHORT).show();
             if (headlessAudioWebView != null) {
-                headlessAudioWebView.evaluateJavascript("if (typeof puter !== 'undefined' && puter.auth) { puter.auth.signOut(); }", null);
+                headlessAudioWebView.evaluateJavascript("try { localStorage.removeItem('puter.auth.token'); } catch(e){}; if (typeof puter !== 'undefined' && puter.auth) { puter.auth.signOut(); }", null);
             }
         } else {
             openPuterAuthDialog();
@@ -2244,6 +2260,7 @@ public class MainActivity extends AppCompatActivity {
                 if (token != null && !token.trim().isEmpty()) {
                     Log.d(TAG, "Puter Token extracted from localStorage: " + token);
                     AuthManager.getInstance(MainActivity.this).setAuthToken(token);
+                    syncPuterTokenToHeadless();
                     runOnUiThread(() -> completePuterAuth());
                 }
             }
@@ -2310,6 +2327,7 @@ public class MainActivity extends AppCompatActivity {
                         String cleanToken = value.replace("\"", "").trim();
                         if (!cleanToken.isEmpty()) {
                             AuthManager.getInstance(MainActivity.this).setAuthToken(cleanToken);
+                            syncPuterTokenToHeadless();
                         }
                     }
                 });
@@ -2369,6 +2387,7 @@ public class MainActivity extends AppCompatActivity {
                 puterAuthDialog = null;
             }
             refreshDropdownUI();
+            syncPuterTokenToHeadless();
             Toast.makeText(MainActivity.this, "Puter Sign-In Successful!", Toast.LENGTH_SHORT).show();
             // Automatically fetch live models if in live mode
             if (isLiveMode) {
