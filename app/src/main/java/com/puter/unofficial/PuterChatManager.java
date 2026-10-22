@@ -95,10 +95,6 @@ public class PuterChatManager {
             if (token != null && !token.trim().isEmpty()) {
                 return token.trim();
             }
-            token = auth.getSavedAuthToken();
-            if (token != null && !token.trim().isEmpty()) {
-                return token.trim();
-            }
         } catch (Exception ignored) {}
 
         // Fallback: Extract directly from CookieManager
